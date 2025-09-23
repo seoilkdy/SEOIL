@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from datetime import date, datetime
 import tkinter as tk
 from tkinter import ttk, messagebox
+import time
+import math
 
 DATE_FMT = "%Y-%m-%d"
 STATUS_ICON = {0: "☐", 1: "⏳", 2: "✔"}
@@ -131,6 +133,15 @@ class TodoApp(tk.Tk):
 
         self.todos: list[Todo] = []
 
+        self._timer_after_id: str | None = None
+        self._blink_after_id: str | None = None
+        self.timer_running: bool = False
+        self.timer_total_sec: int = 0
+        self.timer_warn_sec: int = 30
+        self.timer_end_ts: float = 0.0
+        self.timer_remain_sec: int = 0
+        self._blink_on: bool = False
+
         nb = ttk.Notebook(self)
         nb.pack(expand=True, fill="both", padx=10, pady=10)
 
@@ -144,7 +155,7 @@ class TodoApp(tk.Tk):
         nb.add(self.tab_report, text="리포트")
 
         self._build_todo_tab()
-        ttk.Label(self.tab_timer, text="여기에 '타이머' 기능 추가 예정").pack(pady=20)
+        self._build_timer_tab()
         ttk.Label(self.tab_grade, text="여기에 '성적' 기능 추가 예정").pack(pady=20)
         ttk.Label(self.tab_report, text="여기에 '리포트' 기능 추가 예정").pack(pady=20)
 
@@ -180,6 +191,48 @@ class TodoApp(tk.Tk):
         self.listbox.bind("<Delete>", lambda e: self.delete_selected())
         self.listbox.bind("<space>", self._on_space_toggle)
         self.listbox.bind("<Double-Button-1>", self.show_details)
+
+    # ─────────────────────────────────────────────────────────
+    # [타이머 탭 UI]  ← 새로 구현
+    # ─────────────────────────────────────────────────────────
+    def _build_timer_tab(self) -> None:
+        pad = {"padx": 10, "pady": 8}
+
+        top = ttk.Frame(self.tab_timer)
+        top.pack(fill="x", **pad)
+
+        ttk.Label(top, text="발표 시간(분)").pack(side="left")
+        self.ent_minutes = ttk.Entry(top, width=6)
+        self.ent_minutes.pack(side="left", padx=(4, 12))
+        self.ent_minutes.insert(0, "5")
+
+        ttk.Label(top, text="경고 임계(초)").pack(side="left")
+        self.ent_warn = ttk.Entry(top, width=6)
+        self.ent_warn.pack(side="left", padx=(4, 12))
+        self.ent_warn.insert(0, "30")
+
+        self.btn_start = ttk.Button(top, text="시작", command=self.start_timer)
+        self.btn_start.pack(side="left", padx=4)
+        self.btn_pause = ttk.Button(top, text="일시정지", command=self.pause_resume_timer, state="disabled")
+        self.btn_pause.pack(side="left", padx=4)
+        self.btn_reset = ttk.Button(top, text="초기화", command=self.reset_timer, state="disabled")
+        self.btn_reset.pack(side="left", padx=4)
+
+        mid = ttk.Frame(self.tab_timer)
+        mid.pack(expand=True, fill="both", **pad)
+
+        self.lbl_timer = tk.Label(mid, text="00:00", font=("Helvetica", 36, "bold"))
+        self.lbl_timer.pack(pady=10)
+
+        self.pb_timer = ttk.Progressbar(mid, orient="horizontal", mode="determinate", length=360)
+        self.pb_timer.pack(fill="x", padx=20, pady=10)
+
+        bottom = ttk.Frame(self.tab_timer)
+        bottom.pack(fill="x", **pad)
+        ttk.Label(
+            bottom,
+            text="Tip) 남은 시간이 임계값 이하로 떨어지면 주황색, 0이 되면 빨간색으로 깜박이며 종료를 알립니다."
+        ).pack(anchor="w")
 
     # ─────────────────────────────────────────────────────────
     # [헬퍼 함수: 공통 동작 모음 - 선택 확인, 창 중앙 배치, 리스트 갱신]
@@ -265,6 +318,156 @@ class TodoApp(tk.Tk):
         )
         messagebox.showinfo("할 일 상세", msg)
 
+    # ─────────────────────────────────────────────────────────
+    # [타이머 로직]  ← 새로 구현
+    # ─────────────────────────────────────────────────────────
+    def _format_sec(self, s: int) -> str:
+        s = max(0, int(s))
+        m, ss = divmod(s, 60)
+        return f"{m:02d}:{ss:02d}"
+
+    def _set_timer_controls_running(self, running: bool) -> None:
+        if running:
+            self.btn_start.config(state="disabled")
+            self.btn_pause.config(state="normal", text="일시정지")
+            self.btn_reset.config(state="normal")
+            self.ent_minutes.config(state="disabled")
+            self.ent_warn.config(state="disabled")
+        else:
+            self.btn_start.config(state="normal")
+            self.btn_pause.config(state="disabled", text="일시정지")
+            self.btn_reset.config(state="disabled")
+            self.ent_minutes.config(state="normal")
+            self.ent_warn.config(state="normal")
+
+    def _stop_tick_loop(self) -> None:
+        if self._timer_after_id is not None:
+            try:
+                self.after_cancel(self._timer_after_id)
+            except Exception:
+                pass
+            self._timer_after_id = None
+
+    def _stop_blink(self) -> None:
+        if self._blink_after_id is not None:
+            try:
+                self.after_cancel(self._blink_after_id)
+            except Exception:
+                pass
+            self._blink_after_id = None
+        self._blink_on = False
+        self.lbl_timer.config(fg="black")
+
+    def _start_blink(self) -> None:
+        self._blink_on = not self._blink_on
+        self.lbl_timer.config(fg=("red" if self._blink_on else "black"))
+        self._blink_after_id = self.after(450, self._start_blink)
+
+    def start_timer(self) -> None:
+        self._stop_tick_loop()
+        self._stop_blink()
+
+        try:
+            minutes = float(self.ent_minutes.get().strip())
+        except Exception:
+            messagebox.showerror("입력 오류", "발표 시간(분)을 숫자로 입력하세요. 예: 5 또는 7.5")
+            self.ent_minutes.focus_set()
+            return
+        if minutes <= 0:
+            messagebox.showerror("입력 오류", "발표 시간(분)은 0보다 커야 합니다.")
+            self.ent_minutes.focus_set()
+            return
+
+        try:
+            warn = int(self.ent_warn.get().strip())
+        except Exception:
+            messagebox.showerror("입력 오류", "경고 임계(초)를 정수로 입력하세요. 예: 30")
+            self.ent_warn.focus_set()
+            return
+        if warn < 1:
+            messagebox.showerror("입력 오류", "경고 임계(초)는 1초 이상이어야 합니다.")
+            self.ent_warn.focus_set()
+            return
+
+        total_sec = int(round(minutes * 60))
+        self.timer_total_sec = total_sec
+        self.timer_warn_sec = min(warn, max(1, total_sec - 1))
+
+        self.timer_running = True
+        self.timer_end_ts = time.time() + self.timer_total_sec
+        self.timer_remain_sec = self.timer_total_sec
+        self.lbl_timer.config(text=self._format_sec(self.timer_remain_sec), fg="black")
+        self.pb_timer.config(maximum=self.timer_total_sec, value=0)
+
+        self._set_timer_controls_running(True)
+        self._tick_update()
+
+    def pause_resume_timer(self) -> None:
+        if not self.timer_running:
+            if self.timer_remain_sec <= 0:
+                return
+            self.timer_end_ts = time.time() + self.timer_remain_sec
+            self.timer_running = True
+            self.btn_pause.config(text="일시정지")
+            self._tick_update()
+            return
+
+        now = time.time()
+        remain = max(0, int(math.ceil(self.timer_end_ts - now)))
+        self.timer_remain_sec = remain
+        self.timer_running = False
+        self.btn_pause.config(text="계속")
+        self._stop_tick_loop()
+
+    def reset_timer(self) -> None:
+        self.timer_running = False
+        self.timer_total_sec = 0
+        self.timer_remain_sec = 0
+        self.timer_end_ts = 0.0
+        self._stop_tick_loop()
+        self._stop_blink()
+        self.lbl_timer.config(text="00:00", fg="black")
+        self.pb_timer.config(maximum=100, value=0)
+        self._set_timer_controls_running(False)
+
+    def _on_time_up(self) -> None:
+        self.timer_running = False
+        self._stop_tick_loop()
+        self.lbl_timer.config(text="00:00", fg="red")
+        self.pb_timer.config(value=self.timer_total_sec)
+        try:
+            self.bell()
+        except Exception:
+            pass
+        self.btn_pause.config(state="disabled", text="일시정지")
+        self._start_blink()
+
+    def _tick_update(self) -> None:
+        if not self.timer_running:
+            return
+
+        now = time.time()
+        remain = int(max(0, math.ceil(self.timer_end_ts - now)))
+        self.timer_remain_sec = remain
+
+        self.lbl_timer.config(text=self._format_sec(remain))
+
+        if remain == 0:
+            self._on_time_up()
+            return
+        elif remain <= self.timer_warn_sec:
+            self.lbl_timer.config(fg="orange")
+        else:
+            self.lbl_timer.config(fg="black")
+
+        done = self.timer_total_sec - remain
+        self.pb_timer.config(value=done)
+
+        self._timer_after_id = self.after(200, self._tick_update)
+
+# ─────────────────────────────────────────────────────────
+# 앱 실행
+# ─────────────────────────────────────────────────────────
 if __name__ == "__main__":
     app = TodoApp()
     app.mainloop()

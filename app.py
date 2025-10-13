@@ -7,6 +7,8 @@ import tkinter as tk  # Tkinter 기본 GUI 모듈. tk 라는 짧은 이름으로
 from tkinter import ttk, messagebox  # ttk는 모던 위젯 모음, messagebox는 알림창 띄우는 기능.
 import time  # 현재 시간 재고 타이머 계산할 때 쓰려고 가져오기.
 import math  # 올림/내림 같은 수학 계산에 쓰려고 가져오기.
+import sqlite3 as sql  # [NEW] SQLite 내장 DB로 간단 영속화.
+DB_PATH = "todo.db"    # [NEW] 앱이 사용할 DB 파일 경로/이름.
 
 DATE_FMT = "%Y-%m-%d"  # 날짜 문자열 형식 통일. 예: 2025-09-16
 STATUS_ICON = {0: "☐", 1: "⏳", 2: "✔"}  # 상태 숫자→아이콘 매핑. 0=미완, 1=진행, 2=완료.
@@ -44,6 +46,41 @@ class Todo:  # 할 일 하나를 표현하는 데이터 덩어리.
         else:  # 여유가 좀 있는 경우.
             tag = f"D-{delta}"  # 일반 D-n 표시.
         return f"{icon} [{tag}] {self.start} ~ {self.end} | {self.title}"  # 최종 한 줄 문자열 조립해서 반환.
+
+# ─────────────────────────────────────────────────────────
+# [DB 연동]
+# ─────────────────────────────────────────────────────────
+def _db() -> sql.Connection:  # [NEW] DB 연결 헬퍼. 호출할 때마다 연결 열고 with 블록이 닫히면 자동 종료.
+    return sql.connect(DB_PATH)
+
+def init_db() -> None:  # [NEW] 앱 최초 실행 시 테이블 생성(이미 있으면 무시).
+    with _db() as con:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS todos(
+                id     INTEGER PRIMARY KEY AUTOINCREMENT,  -- 내부용 PK(사용 안 해도 무방)
+                title  TEXT NOT NULL,                      -- 제목
+                start  TEXT NOT NULL,                      -- 시작일(YYYY-MM-DD)
+                end    TEXT NOT NULL,                      -- 종료일(YYYY-MM-DD)
+                memo   TEXT DEFAULT '',                    -- 상세설명 (SQL 키워드 충돌 피하려고 'memo' 컬럼명 사용)
+                status INTEGER NOT NULL                    -- 상태(0/1/2)
+            )
+        """)
+
+def load_all() -> list[Todo]:  # [NEW] DB → 메모리(리스트[Todo])로 읽기.
+    init_db()  # 테이블 없으면 만들어두기.
+    with _db() as con:
+        rows = con.execute(
+            "SELECT title, start, end, memo, status FROM todos ORDER BY id"
+        ).fetchall()
+    return [Todo(title, start, end, memo, status) for (title, start, end, memo, status) in rows]
+
+def save_all(items: list[Todo]) -> None:  # [NEW] 메모리 → DB로 전량 덮어쓰기(간결, 실수 적음).
+    with _db() as con:  # 트랜잭션으로 묶여서 중간 실패 시 자동 롤백.
+        con.execute("DELETE FROM todos")  # 기존 전부 지우고
+        con.executemany(                  # 현재 리스트를 그대로 넣기.
+            "INSERT INTO todos(title, start, end, memo, status) VALUES(?,?,?,?,?)",
+            [(t.title, t.start, t.end, t.desc, t.status) for t in items],
+        )
 
 class TodoDialog(tk.Toplevel):  # 할 일 추가/편집 팝업 창.
 
@@ -160,6 +197,8 @@ class TodoApp(tk.Tk):  # 메인 앱 창. 탭 여러 개 들어가는 윈도우.
         ttk.Label(self.tab_grade, text="여기에 '성적' 기능 추가 예정").pack(pady=20)  # 자리 표시 라벨.
         ttk.Label(self.tab_report, text="여기에 '리포트' 기능 추가 예정").pack(pady=20)  # 자리 표시 라벨.
 
+        init_db()                 # [NEW] DB 준비(없으면 생성).
+        self.todos = load_all()   # [NEW] DB에서 기존 항목 불러오기.
         self.refresh_list()  # 시작할 때 리스트박스 초기 표시 갱신.
 
     # ─────────────────────────────────────────────────────────
@@ -261,6 +300,9 @@ class TodoApp(tk.Tk):  # 메인 앱 창. 탭 여러 개 들어가는 윈도우.
         if self.todos:  # 할 일이 하나라도 있으면.
             self.listbox.insert(tk.END, *[t.display() for t in self.todos])  # 각 항목의 표시 문자열을 집어넣기.
 
+    def _save(self) -> None:  # [NEW] 현재 리스트를 DB에 반영.
+        save_all(self.todos)
+
     # ─────────────────────────────────────────────────────────
     # [사용자 액션: 추가/편집/삭제/상태전환/상세보기 동작]
     # ─────────────────────────────────────────────────────────
@@ -270,6 +312,7 @@ class TodoApp(tk.Tk):  # 메인 앱 창. 탭 여러 개 들어가는 윈도우.
         self.wait_window(dlg)  # 대화상자가 닫힐 때까지 기다리기.
         if dlg.result:  # 저장을 눌러 결과가 있으면.
             self.todos.append(dlg.result)  # 리스트에 추가.
+            self._save()  # [NEW] 추가 후 DB 저장.
             self.refresh_list()  # 화면 갱신.
 
     def edit_selected(self) -> None:  # 선택한 항목 편집.
@@ -281,6 +324,7 @@ class TodoApp(tk.Tk):  # 메인 앱 창. 탭 여러 개 들어가는 윈도우.
         self.wait_window(dlg)  # 닫힐 때까지 대기.
         if dlg.result:  # 결과가 있으면.
             self.todos[idx] = dlg.result  # 해당 위치에 새 값 덮어쓰기.
+            self._save()  # [NEW] 편집 후 DB 저장.
             self.refresh_list()  # 화면 갱신.
 
     def delete_selected(self) -> None:  # 선택 항목 삭제.
@@ -291,6 +335,7 @@ class TodoApp(tk.Tk):  # 메인 앱 창. 탭 여러 개 들어가는 윈도우.
             return  # 아니오면 취소.
         for i in reversed(sel):  # 뒤에서부터 지워야 인덱스 안 꼬임.
             del self.todos[i]  # 해당 항목 삭제.
+        self._save()  # [NEW] 삭제 후 DB 저장.
         self.refresh_list()  # 화면 갱신.
 
     def cycle_status_selected(self) -> None:  # 선택 항목들의 상태를 한 칸씩 넘기기.
@@ -299,6 +344,7 @@ class TodoApp(tk.Tk):  # 메인 앱 창. 탭 여러 개 들어가는 윈도우.
             return  # 끝.
         for i in sel:  # 선택된 각 인덱스에 대해.
             self.todos[i].cycle()  # 상태 순환.
+        self._save()  # [NEW] 상태 전환 후 DB 저장.
         self.refresh_list()  # 화면 갱신.
 
     def _on_space_toggle(self, _e) -> str:  # 스페이스바 눌렀을 때 핸들러.

@@ -17,7 +17,8 @@
 python app.py
 ````
 
-> macOS/Windows/Linux 지원. 별도 패키지 설치가 필요 없습니다.
+> macOS/Windows/Linux 지원.
+> pip install openai
 
 ---
 

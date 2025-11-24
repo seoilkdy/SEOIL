@@ -1,178 +1,235 @@
 # tab_timer.py  --------------------------------------------------
-# 발표 타이머 탭 UI 및 타이머 로직을 담당하는 모듈이다.
+# 발표 타이머 탭의 UI와 타이머 작동 로직을 담당하는 모듈입니다.
+# 사용자가 시간을 설정하고, 시작/일시정지/초기화하며, 남은 시간을 시각적으로 확인할 수 있습니다.
 
-from __future__ import annotations  # 향후 타입 참조를 문자열로 허용
+from __future__ import annotations  # 파이썬 3.7+에서 타입 힌트를 문자열처럼 처리하여 순환 참조 문제를 방지합니다.
 
-import time  # 단조 증가 시계(time.monotonic)를 사용해 타이머 정확도 유지
-import math  # 남은 시간 계산 시 올림/내림에 사용
-import tkinter as tk  # Tkinter 기본 위젯
-from tkinter import ttk  # ttk 스타일 위젯
+import time  # 타이머의 정확도를 유지하기 위해 단조 증가 시계(time.monotonic)를 사용합니다.
+import math  # 남은 시간을 계산할 때 올림(ceil) 처리를 위해 사용합니다.
+import tkinter as tk  # Tkinter 기본 위젯 기능을 가져옵니다.
+from tkinter import ttk  # 더 현대적인 스타일의 ttk 위젯을 가져옵니다.
 
-from core import PAD8  # 여백 설정을 재사용
+from core import PAD8  # UI 배치 시 사용할 공통 여백 상수를 가져옵니다.
 
 
 # ─────────────────────────────────────────────
-# 타이머 탭 프레임
+# 타이머 탭 프레임 클래스
 # ─────────────────────────────────────────────
 
 class TimerTab(ttk.Frame):
-    """발표 타이머 UI + 타이머 동작 로직을 가진 탭."""
+    """
+    발표 타이머 기능을 제공하는 탭 클래스입니다.
+    시간 설정, 타이머 동작 제어, 시각적 피드백(프로그레스 바, 색상 변경)을 처리합니다.
+    """
 
     def __init__(self, master: tk.Misc, on_started=None) -> None:
         """
-        master: Notebook 을 부모로 받는다.
-        on_started: 타이머가 새로 시작될 때 한 번 호출할 콜백(AI 코칭용)
+        TimerTab 클래스의 생성자입니다.
+        
+        Args:
+            master: 이 탭이 포함될 부모 위젯 (주로 Notebook)
+            on_started: 타이머가 시작될 때 호출될 콜백 함수 (AI 코칭 등에 사용)
         """
-        super().__init__(master)  # Frame 기본 초기화
-        self.on_started = on_started  # 타이머 시작 콜백 저장
+        super().__init__(master)  # 부모 클래스(ttk.Frame)의 초기화 메서드를 호출합니다.
+        self.on_started = on_started  # 타이머 시작 시 호출할 콜백 함수를 저장합니다.
 
-        # 타이머 상태 관련 필드 초기화
-        self._timer_after_id: str | None = None  # after 로 예약된 틱 루프 ID
-        self._blink_after_id: str | None = None  # after 로 예약된 깜박임 루프 ID
-        self.timer_running: bool = False  # 현재 타이머 동작 여부
-        self.timer_total_sec: int = 0  # 총 타이머 시간(초)
-        self.timer_warn_sec: int = 30  # 경고 임계(초)
-        self.timer_end_mono: float = 0.0  # time.monotonic 기준 종료 목표 시각
-        self.timer_remain_sec: int = 0  # 남은 시간(초)
-        self._blink_on: bool = False  # 깜박임 상태 토글
+        # --- 타이머 상태 관련 변수 초기화 ---
+        self._timer_after_id: str | None = None  # 타이머 갱신 루프(after)의 ID를 저장 (취소용)
+        self._blink_after_id: str | None = None  # 시간 종료 후 깜박임 루프의 ID를 저장 (취소용)
+        self.timer_running: bool = False  # 현재 타이머가 실행 중인지 여부
+        self.timer_total_sec: int = 0  # 설정된 총 타이머 시간 (초 단위)
+        self.timer_warn_sec: int = 30  # 경고 색상으로 변경될 남은 시간 임계값 (초 단위)
+        self.timer_end_mono: float = 0.0  # 타이머가 종료될 목표 시간 (time.monotonic 기준)
+        self.timer_remain_sec: int = 0  # 현재 남은 시간 (초 단위)
+        self._blink_on: bool = False  # 시간 종료 후 깜박임 효과를 위한 토글 상태
 
-        self.var_timer_tip = tk.StringVar(value="")  # AI 코칭 문구를 위한 StringVar
+        self.var_timer_tip = tk.StringVar(value="")  # AI 코칭 문구를 표시할 문자열 변수
 
-        self._build_ui()  # 실제 위젯 구성
+        self._build_ui()  # UI를 구성하는 메서드를 호출합니다.
 
     # -----------------------------
-    # UI 구성
+    # UI 구성 메서드
     # -----------------------------
     def _build_ui(self) -> None:
-        """상단 입력/버튼, 중앙 타이머 표시, 하단 안내/AI 코칭을 구성한다."""
-        top = ttk.Frame(self)  # 상단 입력/버튼 영역
-        top.pack(fill="x", **PAD8)  # 좌우로 채우고 여백 적용
+        """
+        타이머 탭의 전체 UI를 구성합니다.
+        상단 설정 영역, 중앙 타이머 디스플레이, 하단 컨트롤 버튼 및 AI 팁 영역으로 나뉩니다.
+        """
+        
+        # 1. 메인 카드 프레임 (외곽 테두리 및 배경)
+        card = ttk.Frame(self, style="Card.TFrame", padding=0)
+        card.pack(fill="both", expand=True, padx=20, pady=20)  # 화면에 꽉 차게 배치하되 여백을 둡니다.
+        
+        # 상단 강조 색상 띠 (디자인 요소)
+        ttk.Frame(card, style="Accent.TFrame", height=4).pack(fill="x", side="top")
+        
+        # 내부 컨텐츠를 담을 프레임 (테두리 없음, 넉넉한 패딩)
+        inner = ttk.Frame(card, style="CardPlain.TFrame", padding=30)
+        inner.pack(fill="both", expand=True)
 
-        ttk.Label(top, text="발표 시간(분)").pack(side="left")  # 발표시간 라벨
-        self.ent_minutes = ttk.Entry(top, width=6)  # 분 입력 필드
-        self.ent_minutes.pack(side="left", padx=(4, 12))  # 라벨 오른쪽에 여백 두고 배치
-        self.ent_minutes.insert(0, "5")  # 기본값 5분
+        # 2. 상단 설정 영역 (시간 입력 및 경고 설정)
+        top = ttk.Frame(inner, style="CardPlain.TFrame")
+        top.pack(fill="x", pady=(0, 40)) # 하단 여백을 넉넉히 주어 답답함을 해소합니다.
+        
+        # 입력 필드들을 중앙에 정렬하기 위한 컨테이너
+        top_center = ttk.Frame(top, style="CardPlain.TFrame")
+        top_center.pack(anchor="center")
 
-        ttk.Label(top, text="경고 임계(초)").pack(side="left")  # 경고 임계 라벨
-        self.ent_warn = ttk.Entry(top, width=6)  # 경고 초 입력 필드
-        self.ent_warn.pack(side="left", padx=(4, 12))  # 우측에 여백 배치
-        self.ent_warn.insert(0, "30")  # 기본값 30초
+        # 발표 시간 입력 라벨 및 엔트리
+        ttk.Label(top_center, text="발표 시간(분)", font=("Segoe UI", 11), background="white").pack(side="left", padx=(0, 10))
+        self.ent_minutes = ttk.Entry(top_center, width=5, font=("Segoe UI", 11), justify="center")
+        self.ent_minutes.pack(side="left", padx=(0, 30)) # 다음 그룹과의 간격을 넓게 둡니다.
+        self.ent_minutes.insert(0, "5")  # 기본값 5분 설정
 
-        # 타이머 제어 버튼들 생성
-        self.btn_start = ttk.Button(top, text="시작", command=self.start_timer)  # 시작 버튼
-        self.btn_pause = ttk.Button(top, text="일시정지",
-                                    command=self.pause_resume_timer,
-                                    state="disabled")  # 일시정지 버튼(처음엔 비활성)
-        self.btn_reset = ttk.Button(top, text="초기화",
-                                    command=self.reset_timer,
-                                    state="disabled")  # 초기화 버튼(처음엔 비활성)
+        # 경고 임계 시간 입력 라벨 및 엔트리
+        ttk.Label(top_center, text="경고 임계(초)", font=("Segoe UI", 11), background="white").pack(side="left", padx=(0, 10))
+        self.ent_warn = ttk.Entry(top_center, width=5, font=("Segoe UI", 11), justify="center")
+        self.ent_warn.pack(side="left", padx=(0, 10))
+        self.ent_warn.insert(0, "30")  # 기본값 30초 설정
 
-        # 버튼들을 가로로 나란히 배치
-        self.btn_start.pack(side="left", padx=4)
-        self.btn_pause.pack(side="left", padx=4)
-        self.btn_reset.pack(side="left", padx=4)
+        # 3. 타이머 디스플레이 영역 (중앙)
+        mid = ttk.Frame(inner, style="CardPlain.TFrame")
+        mid.pack(fill="both", expand=True, pady=20)
 
-        mid = ttk.Frame(self)  # 중앙 타이머 표시 영역
-        mid.pack(expand=True, fill="both", **PAD8)  # 남는 공간 대부분 차지
-
-        # 남은 시간을 크게 표시하는 라벨
+        # 남은 시간을 크게 보여줄 라벨
         self.lbl_timer = tk.Label(
             mid,
             text="00:00",
-            font=("Helvetica", 36, "bold"),
+            font=("Segoe UI", 90, "bold"), # 매우 큰 폰트로 시인성 확보
+            fg="#263238",  # 기본 글자색 (진한 회색)
+            bg="white"     # 배경색 (흰색)
         )
-        self.lbl_timer.pack(pady=10)  # 위/아래 여백을 주고 배치
+        self.lbl_timer.pack(expand=True) # 중앙에 배치
 
-        # 진행률 바 (0 ~ 총 시간)
+        # 4. 컨트롤 버튼 & 프로그레스 바 영역
+        ctrl_frame = ttk.Frame(inner, style="CardPlain.TFrame")
+        ctrl_frame.pack(fill="x", pady=30)
+        
+        # 버튼들을 담을 컨테이너 (중앙 정렬)
+        btn_box = ttk.Frame(ctrl_frame, style="CardPlain.TFrame")
+        btn_box.pack(anchor="center", pady=(0, 30))
+
+        # 시작 버튼
+        self.btn_start = ttk.Button(btn_box, text="▶ 시작", style="Action.TButton", command=self.start_timer)
+        self.btn_start.pack(side="left", padx=15)
+        
+        # 일시정지 버튼
+        self.btn_pause = ttk.Button(btn_box, text="⏸ 일시정지", style="Action.TButton", command=self.pause_resume_timer)
+        self.btn_pause.pack(side="left", padx=15)
+        
+        # 초기화 버튼
+        self.btn_reset = ttk.Button(btn_box, text="↺ 초기화", style="Action.TButton", command=self.reset_timer)
+        self.btn_reset.pack(side="left", padx=15)
+
+        # 진행률 표시 바 (두꺼운 스타일 적용)
         self.pb_timer = ttk.Progressbar(
-            mid,
+            ctrl_frame,
             orient="horizontal",
             mode="determinate",
-            length=360,
+            length=500, # 길이를 넉넉하게 설정
+            style="Thick.Horizontal.TProgressbar"
         )
-        self.pb_timer.pack(fill="x", padx=20, pady=10)  # 가로로 꽉 채우도록 배치
+        self.pb_timer.pack(fill="x", padx=60) # 좌우 여백을 주어 안정감 있게 배치
 
-        bottom = ttk.Frame(self)  # 하단 안내 영역
-        bottom.pack(fill="x", **PAD8)
-
-        ttk.Label(
-            bottom,
-            text=(
-                "Tip) 남은 시간이 임계값 이하로 떨어지면 주황색, "
-                "0이 되면 빨간색으로 깜박이며 종료를 알립니다."
-            ),
-        ).pack(anchor="w")  # 안내 문구를 왼쪽 정렬로 배치
-
-        # AI 타이머 코칭을 위한 라벨
-        self.lbl_timer_tip = ttk.Label(
-            self,
-            textvariable=self.var_timer_tip,  # StringVar 을 통해 동적 업데이트
-            foreground="#1e88e5",  # 파란색 계열 텍스트
+        # 5. 하단 팁 영역 (AI 코칭 및 사용법 안내)
+        self.lbl_tip = tk.Label(
+            inner,
+            text="Tip) 남은 시간이 임계값 이하로 떨어지면 주황색, 0이 되면 빨간색으로 깜박입니다.",
+            font=("Segoe UI", 10),
+            fg="#78909C", # 연한 회색 텍스트
+            bg="white",
+            wraplength=600
         )
-        self.lbl_timer_tip.pack(anchor="w", padx=12, pady=(0, 10))  # 아래쪽 여백을 살짝 주고 배치
+        self.lbl_tip.pack(side="bottom", pady=(10, 0))
+
+        # AI 코칭 메시지를 표시할 라벨
+        self.lbl_timer_tip = tk.Label(
+            inner,
+            textvariable=self.var_timer_tip, # AI 팁 변수와 연결
+            font=("Segoe UI", 10, "bold"),
+            fg="#3F51B5", # 강조색 (인디고)
+            bg="white"
+        )
+        self.lbl_timer_tip.pack(side="bottom", pady=(5, 0))
 
     # -----------------------------
-    # 타이머 포맷/제어 유틸
+    # 타이머 포맷/제어 유틸리티
     # -----------------------------
     def _format_sec(self, s: int) -> str:
-        """정수 초를 'MM:SS' 형식의 문자열로 바꾼다."""
-        s = max(0, int(s))  # 음수 방지 + 정수화
-        m, ss = divmod(s, 60)  # 분과 초로 나누기
-        return f"{m:02d}:{ss:02d}"  # 두 자리 0 패딩 형식으로 반환
+        """
+        초 단위 정수를 'MM:SS' 형식의 문자열로 변환합니다.
+        예: 65 -> "01:05"
+        """
+        s = max(0, int(s))  # 음수가 되지 않도록 방지하고 정수화합니다.
+        m, ss = divmod(s, 60)  # 분과 초로 나눕니다.
+        return f"{m:02d}:{ss:02d}"  # 두 자리 숫자로 패딩하여 반환합니다.
 
     def _set_controls_running(self, running: bool) -> None:
-        """타이머 실행 상태에 따라 버튼/입력 필드 활성/비활성을 전환한다."""
-        if running:  # 타이머가 돌아가는 상태
-            self.btn_start.config(state="disabled")  # 시작 버튼 비활성
-            self.btn_pause.config(state="normal", text="일시정지")  # 일시정지 활성
-            self.btn_reset.config(state="normal")  # 초기화 활성
-            self.ent_minutes.config(state="disabled")  # 설정값 변경 방지
-            self.ent_warn.config(state="disabled")
-        else:  # 타이머가 멈춰 있는 상태
-            self.btn_start.config(state="normal")  # 시작 활성
-            self.btn_pause.config(state="disabled", text="일시정지")  # 일시정지 비활성
-            self.btn_reset.config(state="disabled")  # 초기화 비활성
-            self.ent_minutes.config(state="normal")  # 다시 입력 가능
-            self.ent_warn.config(state="normal")
+        """
+        타이머 실행 상태에 따라 버튼과 입력 필드의 활성화/비활성화 상태를 전환합니다.
+        
+        Args:
+            running: 타이머가 실행 중이면 True, 아니면 False
+        """
+        if running:  # 타이머가 실행 중일 때
+            self.btn_start.config(state="disabled")  # 시작 버튼 비활성화 (중복 시작 방지)
+            self.btn_pause.config(state="normal", text="일시정지")  # 일시정지 버튼 활성화
+            self.btn_reset.config(state="normal")  # 초기화 버튼 활성화
+            self.ent_minutes.config(state="disabled")  # 시간 설정 변경 불가
+            self.ent_warn.config(state="disabled")     # 경고 설정 변경 불가
+        else:  # 타이머가 멈춰 있거나 초기화 상태일 때
+            self.btn_start.config(state="normal")  # 시작 버튼 활성화
+            self.btn_pause.config(state="disabled", text="일시정지")  # 일시정지 버튼 비활성화
+            self.btn_reset.config(state="disabled")  # 초기화 버튼 비활성화
+            self.ent_minutes.config(state="normal")  # 시간 설정 가능
+            self.ent_warn.config(state="normal")     # 경고 설정 가능
 
     def _stop_tick_loop(self) -> None:
-        """예약된 타이머 틱(after) 호출이 있으면 취소한다."""
-        if self._timer_after_id is not None:  # 예약 ID 가 있을 때만
+        """
+        현재 예약된 타이머 갱신 루프(after)가 있다면 취소합니다.
+        """
+        if self._timer_after_id is not None:  # 예약 ID가 존재하면
             try:
-                self.after_cancel(self._timer_after_id)  # after 예약 취소
+                self.after_cancel(self._timer_after_id)  # Tkinter after 예약 취소
             except Exception:
-                pass  # 이미 실행된 경우 예외 무시
+                pass  # 이미 실행되었거나 취소된 경우 무시
             self._timer_after_id = None  # ID 초기화
 
     def _stop_blink(self) -> None:
-        """타임업 후 진행 중인 깜박임 루프를 종료하고 색상을 복원한다."""
-        if self._blink_after_id is not None:  # 깜박임 예약이 있을 때
+        """
+        타임업 후 진행 중인 깜박임 효과를 중지하고, 라벨 색상을 원래대로 복원합니다.
+        """
+        if self._blink_after_id is not None:  # 깜박임 예약이 존재하면
             try:
                 self.after_cancel(self._blink_after_id)  # 예약 취소
             except Exception:
                 pass
             self._blink_after_id = None  # ID 초기화
-        self._blink_on = False  # 토글 상태 초기화
-        self.lbl_timer.config(fg="black")  # 라벨 색상 원래대로 복원
+        self._blink_on = False  # 깜박임 상태 초기화
+        self.lbl_timer.config(fg="black")  # 라벨 색상을 검정색으로 복원
 
     def _start_blink(self) -> None:
-        """타임업 상태에서 빨강/검정으로 라벨 색상을 번갈아가며 깜박인다."""
-        self._blink_on = not self._blink_on  # 토글 플래그 반전
-        self.lbl_timer.config(fg=("red" if self._blink_on else "black"))  # 색상을 토글
+        """
+        타임업 상태에서 라벨 색상을 빨간색과 검정색으로 번갈아 변경하여 깜박임 효과를 줍니다.
+        """
+        self._blink_on = not self._blink_on  # 상태 토글 (True <-> False)
+        self.lbl_timer.config(fg=("red" if self._blink_on else "black"))  # 상태에 따라 색상 변경
         self._blink_after_id = self.after(450, self._start_blink)  # 0.45초마다 재귀적으로 호출
 
     # -----------------------------
-    # 타이머 시작/일시정지/초기화
+    # 타이머 시작/일시정지/초기화 로직
     # -----------------------------
     def start_timer(self) -> None:
-        """입력값을 검증한 뒤 새 타이머를 시작한다."""
-        self._stop_tick_loop()  # 기존 틱 루프가 있으면 먼저 중지
-        self._stop_blink()  # 깜박임도 중지
+        """
+        사용자 입력을 검증하고 새로운 타이머를 시작합니다.
+        """
+        self._stop_tick_loop()  # 기존에 실행 중인 타이머 루프가 있다면 중지
+        self._stop_blink()  # 깜박임 효과도 중지
 
+        # 1. 발표 시간 입력 검증
         try:
-            minutes = float(self.ent_minutes.get().strip())  # 분 입력을 float 으로 파싱
+            minutes = float(self.ent_minutes.get().strip())  # 입력값을 실수로 변환
         except Exception:
-            # 숫자 형식이 아닐 때 에러 메시지
             self.ent_minutes.focus_set()
             from tkinter import messagebox
             messagebox.showerror("입력 오류", "발표 시간(분)을 숫자로 입력하세요. 예: 5 또는 7.5", parent=self.winfo_toplevel())
@@ -184,116 +241,135 @@ class TimerTab(ttk.Frame):
             self.ent_minutes.focus_set()
             return
 
+        # 2. 경고 임계 시간 입력 검증
         try:
-            warn = int(self.ent_warn.get().strip())  # 경고 임계초를 int 로 파싱
+            warn = int(self.ent_warn.get().strip())  # 입력값을 정수로 변환
         except Exception:
             from tkinter import messagebox
             messagebox.showerror("입력 오류", "경고 임계(초)를 정수로 입력하세요. 예: 30", parent=self.winfo_toplevel())
             self.ent_warn.focus_set()
             return
 
-        if warn < 1:  # 최소 1초
+        if warn < 1:  # 최소 1초 이상이어야 함
             from tkinter import messagebox
             messagebox.showerror("입력 오류", "경고 임계(초)는 1초 이상이어야 합니다.", parent=self.winfo_toplevel())
             self.ent_warn.focus_set()
             return
 
-        total_sec = int(round(minutes * 60))  # 분을 초 단위로 변환
+        # 3. 타이머 설정 및 시작
+        total_sec = int(round(minutes * 60))  # 분을 초로 변환
         self.timer_total_sec = total_sec  # 총 시간 저장
-        # 경고 임계치는 총 시간보다 커지지 않도록 클램프
+        # 경고 임계값은 총 시간보다 클 수 없으므로 조정(clamp)
         self.timer_warn_sec = min(warn, max(1, total_sec - 1))
-        self.timer_running = True  # 타이머 실행 플래그
-        self.timer_end_mono = time.monotonic() + self.timer_total_sec  # 현재 시각 기준 종료 목표 시각
+        
+        self.timer_running = True  # 실행 상태로 설정
+        self.timer_end_mono = time.monotonic() + self.timer_total_sec  # 종료 목표 시간 계산
         self.timer_remain_sec = self.timer_total_sec  # 남은 시간 초기화
 
         # UI 초기화
         self.lbl_timer.config(text=self._format_sec(self.timer_remain_sec), fg="black")
         self.pb_timer.config(maximum=self.timer_total_sec, value=0)
 
-        self._set_controls_running(True)  # 버튼/입력 상태 전환
-        self._tick_update()  # 틱 루프 시작
+        self._set_controls_running(True)  # 버튼 상태 업데이트
+        self._tick_update()  # 타이머 갱신 루프 시작
 
-        # 메인 앱에 '타이머가 막 시작됨' 을 알리기(AI 코칭 프롬프트용)
+        # 메인 앱에 타이머 시작 알림 (AI 코칭용)
         if self.on_started:
             self.on_started()
 
     def pause_resume_timer(self) -> None:
-        """일시정지와 계속을 토글한다."""
-        if not self.timer_running:  # 현재 멈춰있는 상태에서 호출되면
-            if self.timer_remain_sec <= 0:  # 이미 끝난 타이머면 아무 것도 안 함
+        """
+        타이머의 일시정지 및 재개 기능을 토글합니다.
+        """
+        if not self.timer_running:  # 현재 멈춰있는 상태라면 (재개)
+            if self.timer_remain_sec <= 0:  # 이미 종료된 타이머라면 무시
                 return
-            # 남은 시간을 기준으로 새로운 종료 목표 시각 계산
+            # 남은 시간을 기준으로 새로운 종료 목표 시간을 계산
             self.timer_end_mono = time.monotonic() + self.timer_remain_sec
-            self.timer_running = True  # 다시 실행 상태로 전환
+            self.timer_running = True  # 실행 상태로 변경
             self.btn_pause.config(text="일시정지")  # 버튼 텍스트 변경
-            self._tick_update()  # 틱 루프 다시 시작
+            self._tick_update()  # 루프 재시작
             return
 
-        # 여기까지 왔다는 것은 현재 실행 중이므로 일시정지 동작
-        now_mono = time.monotonic()  # 현재 단조 시각
+        # 현재 실행 중인 상태라면 (일시정지)
+        now_mono = time.monotonic()
         remain = max(0, int(math.ceil(self.timer_end_mono - now_mono)))  # 남은 시간 계산
-        self.timer_remain_sec = remain  # 상태에 저장
-        self.timer_running = False  # 실행 중단
-        self.btn_pause.config(text="계속")  # 버튼 텍스트를 '계속'으로 변경
-        self._stop_tick_loop()  # 틱 루프 중단
+        self.timer_remain_sec = remain  # 남은 시간 저장
+        self.timer_running = False  # 실행 중단 상태로 변경
+        self.btn_pause.config(text="계속")  # 버튼 텍스트 변경
+        self._stop_tick_loop()  # 루프 중단
 
     def reset_timer(self) -> None:
-        """타이머 상태를 완전히 초기화한다."""
-        self.timer_running = False  # 실행 플래그 해제
+        """
+        타이머를 완전히 초기화하고 정지합니다.
+        """
+        self.timer_running = False  # 실행 상태 해제
         self.timer_total_sec = 0  # 총 시간 초기화
         self.timer_remain_sec = 0  # 남은 시간 초기화
-        self.timer_end_mono = 0.0  # 목표 시각 초기화
-        self._stop_tick_loop()  # 틱 루프 중단
+        self.timer_end_mono = 0.0  # 목표 시간 초기화
+        
+        self._stop_tick_loop()  # 루프 중단
         self._stop_blink()  # 깜박임 중단
-        self.lbl_timer.config(text="00:00", fg="black")  # 표시 시간/색상 초기화
-        self.pb_timer.config(maximum=1, value=0)  # 진행률 바 초기화
-        self._set_controls_running(False)  # 버튼/입력 상태 초기화
+        
+        self.lbl_timer.config(text="00:00", fg="black")  # 디스플레이 초기화
+        self.pb_timer.config(maximum=1, value=0)  # 프로그레스 바 초기화
+        self._set_controls_running(False)  # 버튼 상태 초기화
 
     # -----------------------------
-    # 타임업 / 틱 업데이트
+    # 타임업 및 갱신 루프
     # -----------------------------
     def _on_time_up(self) -> None:
-        """남은 시간이 0이 되었을 때 타임업 처리를 수행한다."""
+        """
+        타이머 시간이 0이 되었을 때 호출되어 종료 처리를 수행합니다.
+        """
         self.timer_running = False  # 실행 상태 해제
-        self._stop_tick_loop()  # 틱 루프 중단
-        self.lbl_timer.config(text="00:00", fg="red")  # 0초를 빨간색으로 표시
-        self.pb_timer.config(value=self.timer_total_sec)  # 진행률 바를 끝까지 채움
+        self._stop_tick_loop()  # 루프 중단
+        
+        self.lbl_timer.config(text="00:00", fg="red")  # 0초 표시 및 빨간색 변경
+        self.pb_timer.config(value=self.timer_total_sec)  # 프로그레스 바 꽉 채움
+        
         try:
-            self.bell()  # OS 기본 알림음 울리기
+            self.bell()  # 시스템 알림음 재생
         except Exception:
-            pass  # 일부 환경에서 벨이 지원되지 않을 수 있으므로 예외 무시
+            pass  # 알림음 재생 실패 시 무시
+            
         self.btn_pause.config(state="disabled", text="일시정지")  # 일시정지 버튼 비활성화
-        self._start_blink()  # 깜박임 시작
+        self._start_blink()  # 깜박임 효과 시작
 
     def _tick_update(self) -> None:
-        """200ms 간격으로 남은 시간을 갱신하는 틱 루프."""
-        if not self.timer_running:  # 실행 중이 아니면 루프 중단
+        """
+        약 200ms 간격으로 호출되어 남은 시간을 갱신하고 UI를 업데이트합니다.
+        """
+        if not self.timer_running:  # 실행 중이 아니면 중단
             return
-        now_mono = time.monotonic()  # 현재 단조 시각
-        # 목표 시각까지 남은 시간(초)을 계산하고 0 미만은 0 으로 처리
+            
+        now_mono = time.monotonic()  # 현재 시간 측정
+        # 남은 시간 계산 (목표 시간 - 현재 시간), 0 미만은 0으로 처리
         remain = int(max(0, math.ceil(self.timer_end_mono - now_mono)))
-        self.timer_remain_sec = remain  # 남은 초를 상태에 반영
+        self.timer_remain_sec = remain  # 상태 업데이트
         self.lbl_timer.config(text=self._format_sec(remain))  # 라벨 텍스트 갱신
 
-        if remain == 0:  # 0초가 되면 타임업 처리
-            self._on_time_up()
+        if remain == 0:  # 시간이 다 되었으면
+            self._on_time_up()  # 종료 처리
             return
-        elif remain <= self.timer_warn_sec:  # 경고 임계 이하
-            self.lbl_timer.config(fg="orange")  # 주황색으로 표시
+        elif remain <= self.timer_warn_sec:  # 경고 임계값 이하로 떨어지면
+            self.lbl_timer.config(fg="orange")  # 글자색을 주황색으로 변경
         else:
-            self.lbl_timer.config(fg="black")  # 평상시 검정
+            self.lbl_timer.config(fg="black")  # 평상시는 검정색
 
-        done = self.timer_total_sec - remain  # 경과 시간(초)
-        self.pb_timer.config(value=done)  # 진행률 바 갱신
+        done = self.timer_total_sec - remain  # 경과 시간 계산
+        self.pb_timer.config(value=done)  # 프로그레스 바 업데이트
 
-        # 200ms 후에 다시 자신을 호출하도록 예약
+        # 200ms 후에 다시 이 함수를 호출하도록 예약 (재귀적 호출)
         self._timer_after_id = self.after(200, self._tick_update)
 
     # -----------------------------
-    # AI 연동 / 종료 처리
+    # AI 연동 및 종료 처리
     # -----------------------------
     def get_state_for_ai(self) -> dict:
-        """AI 컨텍스트 생성을 위해 타이머 상태를 dict 로 요약해 반환한다."""
+        """
+        AI 컨텍스트 생성을 위해 현재 타이머 상태를 딕셔너리로 반환합니다.
+        """
         return {
             "running": self.timer_running,
             "remain_sec": self.timer_remain_sec,
@@ -302,10 +378,14 @@ class TimerTab(ttk.Frame):
         }
 
     def set_ai_tip(self, text: str) -> None:
-        """AI 타이머 코칭 문구를 라벨에 표시한다."""
-        self.var_timer_tip.set(text)  # StringVar 에 텍스트 설정
+        """
+        AI가 생성한 코칭 문구를 화면 하단 라벨에 표시합니다.
+        """
+        self.var_timer_tip.set(text)  # StringVar 값 변경 -> 라벨 자동 갱신
 
     def on_close(self) -> None:
-        """메인 윈도우 종료 시 타이머 관련 after 루프를 정리한다."""
+        """
+        프로그램 종료 시 호출되어 실행 중인 타이머 루프를 정리합니다.
+        """
         self._stop_tick_loop()  # 틱 루프 취소
         self._stop_blink()  # 깜박임 루프 취소

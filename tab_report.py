@@ -58,83 +58,118 @@ class ReportTab(ttk.Frame):
     # -----------------------------
     def _build_ui(self) -> None:
         """텍스트 KPI + 도넛 + 스택바 + 주간 히트맵의 UI 구조를 만든다."""
-        frm = ttk.Frame(self)  # 루트 컨테이너 프레임
-        frm.pack(fill="both", expand=True, padx=12, pady=12)  # 여백과 함께 전체 채우기
+        self.configure(style="TFrame")  # 배경색 설정
 
+        # 메인 컨테이너 (여백 추가)
+        main_container = ttk.Frame(self, style="TFrame", padding=20)
+        main_container.pack(fill="both", expand=True)
+
+        # 카드 프레임 (흰색 배경, 그림자 효과 느낌)
+        card = ttk.Frame(main_container, style="Card.TFrame", padding=30)
+        card.pack(fill="both", expand=True)
+
+        # ─── 타이틀 영역 ───
+        title_frame = ttk.Frame(card, style="Card.TFrame")
+        title_frame.pack(fill="x", pady=(0, 20))
+        
         ttk.Label(
-            frm,
-            text="📊 주간 성과 리포트",  # 탭 제목
-            font=("Helvetica", 14, "bold"),
-        ).pack(anchor="w", pady=(0, 8))
+            title_frame,
+            text="📊 주간 성과 리포트",
+            font=("Segoe UI", 18, "bold"),  # 폰트 크기 키움
+            foreground="#3F51B5",  # 강조색 사용
+            background="white"
+        ).pack(side="left")
 
-        top = ttk.Frame(frm)  # 상단 (도넛 + KPI 텍스트)
-        top.pack(fill="x")
+        # ─── 컨텐츠 영역 (수직 중앙 정렬을 위한 프레임) ───
+        content_frame = ttk.Frame(card, style="Card.TFrame")
+        content_frame.pack(fill="both", expand=True)
+        
+        # 상단/하단 여백을 위한 grid row 설정
+        content_frame.grid_rowconfigure(0, weight=1)
+        content_frame.grid_rowconfigure(4, weight=1)
+        content_frame.grid_columnconfigure(0, weight=1)
 
-        # 완료율 도넛을 그릴 캔버스
+        # 실제 내용물 컨테이너
+        inner_box = ttk.Frame(content_frame, style="Card.TFrame")
+        inner_box.grid(row=1, column=0, sticky="ew")
+
+        # 1. 상단: 도넛 + KPI 텍스트
+        top_section = ttk.Frame(inner_box, style="Card.TFrame")
+        top_section.pack(fill="x", pady=(0, 30))
+
+        # 도넛 캔버스
         self.cnv_ring = tk.Canvas(
-            top,
-            width=160,
-            height=160,
-            highlightthickness=0,  # 외곽선 제거
+            top_section,
+            width=180, height=180,  # 크기 약간 키움
+            bg="white",
+            highlightthickness=0
         )
-        self.cnv_ring.pack(side="left", padx=(0, 16))  # 왼쪽에 배치
+        self.cnv_ring.pack(side="left", padx=(20, 40))
 
-        right = ttk.Frame(top)  # 도넛 오른쪽에 KPI 텍스트 묶음
-        right.pack(side="left", fill="both", expand=True)
+        # KPI 텍스트 그룹
+        kpi_group = ttk.Frame(top_section, style="Card.TFrame")
+        kpi_group.pack(side="left", fill="both", expand=True)
 
-        # 완료율 라벨
         self.lbl_rate = ttk.Label(
-            right,
+            kpi_group,
             text="완료율 0.0%",
-            font=("Helvetica", 12, "bold"),
+            font=("Segoe UI", 24, "bold"),  # 폰트 키움
+            background="white"
         )
-        self.lbl_rate.pack(anchor="w", pady=(4, 6))
+        self.lbl_rate.pack(anchor="w", pady=(0, 15))
 
-        # 추가 KPI 항목들(StringVar)
-        self.var_avg = tk.StringVar(value="평균 기간: 0.0일")  # Todo 기간 평균
-        self.var_soon = tk.StringVar(value="마감 임박: 0건")  # 3일 이내 마감
-        self.var_over = tk.StringVar(value="지남: 0건")  # 마감 초과
-        self.var_counts = tk.StringVar(
-            value="상태 구성: 미완 0 · 진행 0 · 완료 0"
-        )  # 상태별 개수
+        # KPI 항목 스타일
+        kpi_style = {"font": ("Segoe UI", 11), "background": "white", "foreground": "#546E7A"}
+        
+        self.var_avg = tk.StringVar(value="평균 기간: 0.0일")
+        self.var_soon = tk.StringVar(value="마감 임박: 0건")
+        self.var_over = tk.StringVar(value="지남: 0건")
+        self.var_counts = tk.StringVar(value="상태 구성: 미완 0 · 진행 0 · 완료 0")
 
-        ttk.Label(right, textvariable=self.var_avg).pack(anchor="w")
-        ttk.Label(right, textvariable=self.var_soon).pack(anchor="w")
-        ttk.Label(right, textvariable=self.var_over).pack(anchor="w")
-        ttk.Label(right, textvariable=self.var_counts).pack(anchor="w", pady=(2, 0))
+        ttk.Label(kpi_group, textvariable=self.var_avg, **kpi_style).pack(anchor="w", pady=2)
+        ttk.Label(kpi_group, textvariable=self.var_soon, **kpi_style).pack(anchor="w", pady=2)
+        ttk.Label(kpi_group, textvariable=self.var_over, **kpi_style).pack(anchor="w", pady=2)
+        ttk.Label(kpi_group, textvariable=self.var_counts, **kpi_style).pack(anchor="w", pady=(10, 0))
 
-        # 상태 구성 스택바용 캔버스
+        # 2. 중간: 스택바
         self.cnv_stack = tk.Canvas(
-            frm,
-            height=22,
-            highlightthickness=0,
+            inner_box,
+            height=24,
+            bg="white",
+            highlightthickness=0
         )
-        self.cnv_stack.pack(fill="x", pady=(10, 6))
+        self.cnv_stack.pack(fill="x", pady=(0, 30))
 
-        # 주간 히트맵 집계 범위 표시 라벨
-        self.var_week_range = tk.StringVar(value="")  # 예: "2025-11-17 ~ 2025-11-23"
+        # 3. 하단: 히트맵
+        # 집계 범위 라벨
+        self.var_week_range = tk.StringVar(value="")
         ttk.Label(
-            frm,
+            inner_box,
             textvariable=self.var_week_range,
-            foreground="#555",
-        ).pack(anchor="w", pady=(0, 4))
+            font=("Segoe UI", 10),
+            foreground="#78909C",
+            background="white"
+        ).pack(anchor="w", pady=(0, 5))
 
-        # 주간 히트맵 캔버스(클릭/더블클릭 가능)
         self.cnv_heat = tk.Canvas(
-            frm,
-            height=70,
+            inner_box,
+            height=80,  # 높이 약간 키움
+            bg="white",
             highlightthickness=0,
-            cursor="hand2",  # 손 모양 커서
+            cursor="hand2"
         )
         self.cnv_heat.pack(fill="x")
-        self.cnv_heat.bind("<Button-1>", self._on_heat_click)  # 단일 클릭: 하이라이트
-        self.cnv_heat.bind("<Double-Button-1>", self._on_heat_dblclick)  # 더블 클릭: 상세 팝업
+        self.cnv_heat.bind("<Button-1>", self._on_heat_click)
+        self.cnv_heat.bind("<Double-Button-1>", self._on_heat_dblclick)
 
+        # 푸터 메시지
         ttk.Label(
-            frm,
+            card,
             text="※ 5초마다 자동 갱신 · 리스트 변경 시 즉시 반영",
-            foreground="#666",
-        ).pack(anchor="w", pady=(8, 0))
+            font=("Segoe UI", 9),
+            foreground="#90A4AE",
+            background="white"
+        ).pack(side="bottom", anchor="e", pady=(10, 0))
 
     # -----------------------------
     # 자동 갱신 루프 제어

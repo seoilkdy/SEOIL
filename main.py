@@ -37,7 +37,84 @@ from tab_dashboard import DashboardTab  # 대시보드 탭 프레임
 OPENAI_URL_CHAT = "https://api.openai.com/v1/chat/completions"  # Chat API 엔드포인트
 ASSIST_MODEL_DEFAULT = "gpt-4o-mini"  # 빠르고 저렴한 경량 모델
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "realkey")  # 환경변수 또는 기본값
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "realkey")  # 환경변수 또는 기본값
 ASSIST_TIMEOUT = 40  # AI 도우미 호출 타임아웃(초)
+
+
+# ─────────────────────────────────────────────
+# UI 스타일 설정 (Global)
+# ─────────────────────────────────────────────
+
+def configure_app_style():
+    """앱 전체에 적용될 Soft Modern 스타일 설정."""
+    style = ttk.Style()
+    
+    # 1. 색상 팔레트 (Soft Modern)
+    ACCENT_COLOR = "#3F51B5"        # 인디고 (강조색)
+    ACCENT_LIGHT = "#E8EAF6"        # 연한 인디고 (선택 배경)
+    BG_COLOR = "#F5F7FA"            # 쿨 그레이 (전체 배경)
+    CARD_BG = "#FFFFFF"             # 카드 배경
+    BORDER_COLOR = "#E0E0E0"        # 카드 테두리
+    
+    TEXT_MAIN = "#263238"           # 진한 슬레이트
+    TEXT_SUB = "#546E7A"            # 중간 슬레이트
+    
+    BTN_BG = "#E3F2FD"              # 버튼 배경 (소프트 블루)
+    BTN_HOVER = "#BBDEFB"           # 버튼 호버
+    BTN_TEXT = "#1565C0"            # 버튼 텍스트
+    
+    HEADER_BG = "#FAFAFA"           # 헤더 배경
+
+    # 2. 폰트 정의 (Segoe UI)
+    FONT_TITLE = ("Segoe UI", 14, "bold")
+    FONT_HEADER = ("Segoe UI", 11, "bold")
+    FONT_BODY = ("Segoe UI", 10)
+    FONT_SMALL = ("Segoe UI", 9)
+
+    # 3. 공통 스타일 설정
+    style.configure("TFrame", background=BG_COLOR)
+    
+    # Card Style (No Border for cleaner look)
+    style.configure(
+        "Card.TFrame", 
+        background=CARD_BG,
+        relief="flat",
+        borderwidth=0
+    )
+    
+    # Card Plain (No Border, White BG) - For inner layouts
+    style.configure(
+        "CardPlain.TFrame",
+        background=CARD_BG,
+        borderwidth=0,
+        relief="flat"
+    )
+    
+    # Accent Strip
+    style.configure("Accent.TFrame", background=ACCENT_COLOR)
+    # Treeview (Dashboard Style)
+    style.configure(
+        "Dashboard.Treeview",
+        font=FONT_BODY,
+        rowheight=38,
+        background="white",
+        fieldbackground="white",
+        foreground=TEXT_MAIN,
+        borderwidth=0,
+    )
+    style.configure(
+        "Dashboard.Treeview.Heading",
+        font=FONT_HEADER,
+        background=HEADER_BG,
+        foreground=TEXT_MAIN,
+        relief="flat",
+        padding=(0, 10)
+    )
+    style.map(
+        "Dashboard.Treeview",
+        background=[("selected", ACCENT_LIGHT)],
+        foreground=[("selected", "black")],
+    )
 
 
 # ─────────────────────────────────────────────
@@ -51,9 +128,13 @@ class MainApp(tk.Tk):
         super().__init__()  # Tk 루트 윈도우 초기화
 
         self.title("갓생살기")  # 윈도우 제목
+        
+        # 스타일 설정 적용
+        configure_app_style()
+        
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()  # 화면 해상도
-        x, y = (sw - 620) // 2, (sh - 460) // 2  # 중앙 근처 위치 계산
-        self.geometry(f"620x460+{x}+{y}")  # 윈도우 크기/위치 지정
+        x, y = (sw - 1100) // 2, (sh - 750) // 2  # 중앙 근처 위치 계산
+        self.geometry(f"1100x750+{x}+{y}")  # 윈도우 크기/위치 지정
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)  # 닫기 버튼 클릭 시 핸들러
 
@@ -101,10 +182,10 @@ class MainApp(tk.Tk):
         self.tab_dashboard = DashboardTab(nb)
 
         # Notebook 에 실제 탭으로 추가
+        nb.add(self.tab_dashboard, text="대시보드")
         nb.add(self.tab_todo, text="할 일")
         nb.add(self.tab_timer, text="타이머")
         nb.add(self.tab_report, text="리포트")
-        nb.add(self.tab_dashboard, text="대시보드")
 
         # 할 일 리스트/리포트 초기 렌더링
         self.tab_todo.refresh_list()

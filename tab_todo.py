@@ -30,7 +30,8 @@ class TodoDialog(tk.Toplevel):
     """
 
     def __init__(self, parent: tk.Tk, title: str,
-                 prefill: str = "", item: Todo | None = None) -> None:
+                 prefill: str = "", item: Todo | None = None,
+                 initial_date: str | None = None) -> None:
         """
         TodoDialog 생성자입니다.
         
@@ -38,7 +39,9 @@ class TodoDialog(tk.Toplevel):
             parent: 부모 윈도우 (메인 앱)
             title: 팝업 창의 제목 (예: "할 일 추가", "할 일 편집")
             prefill: 빠른 추가 시 제목 입력란에 미리 채울 텍스트
+            prefill: 빠른 추가 시 제목 입력란에 미리 채울 텍스트
             item: 편집 모드일 경우, 기존 Todo 객체 (없으면 None)
+            initial_date: 추가 모드일 경우, 시작/종료일 기본값 (YYYY-MM-DD)
         """
         super().__init__(parent)  # 부모 클래스(Toplevel) 초기화
         self.result: Todo | None = None  # 사용자가 저장을 눌렀을 때 생성된 Todo 객체를 담을 변수
@@ -51,6 +54,9 @@ class TodoDialog(tk.Toplevel):
 
         pad = PAD6  # 공통 여백 상수 사용
         today_str = date.today().isoformat()  # 오늘 날짜를 "YYYY-MM-DD" 문자열로 가져옵니다.
+        
+        # 초기 날짜가 주어지면 그것을 기본값으로 사용
+        default_date = initial_date if initial_date else today_str
 
         # --- UI 구성 ---
         
@@ -65,13 +71,13 @@ class TodoDialog(tk.Toplevel):
         ttk.Label(self, text="시작일 (YYYY-MM-DD)").grid(row=1, column=0, sticky="w", **pad)
         self.ent_start = ttk.Entry(self, width=20)
         self.ent_start.grid(row=1, column=1, sticky="w", **pad)
-        self.ent_start.insert(0, item.start if item else today_str)  # 기본값은 오늘 날짜
+        self.ent_start.insert(0, item.start if item else default_date)  # 기본값 설정
 
         # 3. 종료일 입력
         ttk.Label(self, text="종료일 (YYYY-MM-DD)").grid(row=2, column=0, sticky="w", **pad)
         self.ent_end = ttk.Entry(self, width=20)
         self.ent_end.grid(row=2, column=1, sticky="w", **pad)
-        self.ent_end.insert(0, item.end if item else today_str)  # 기본값은 오늘 날짜
+        self.ent_end.insert(0, item.end if item else default_date)  # 기본값 설정
 
         # 4. 상세 설명 입력 (여러 줄 텍스트)
         ttk.Label(self, text="상세설명").grid(row=3, column=0, sticky="nw", **pad)
@@ -335,6 +341,28 @@ class TodoTab(ttk.Frame):
             self.refresh_list()  # UI 갱신
             if self.on_todos_changed:  # 변경 알림
                 self.on_todos_changed()
+
+    def add_todo_with_date(self, date_str: str) -> None:
+        """
+        외부(캘린더 등)에서 특정 날짜로 할 일을 추가할 때 호출됩니다.
+        """
+        dlg = TodoDialog(self.winfo_toplevel(), "할 일 추가", initial_date=date_str)
+        dlg.wait_window()
+        
+        if dlg.result:
+            self.todos.append(dlg.result)
+            save_all(self.todos)
+            self.refresh_list()
+            if self.on_todos_changed:
+                self.on_todos_changed()
+
+    def edit_todo_by_title(self, title: str) -> None:
+        """
+        제목으로 할 일을 찾아 편집 다이얼로그를 엽니다.
+        """
+        idx = next((i for i, t in enumerate(self.todos) if t.title == title), None)
+        if idx is not None:
+            self.select_and_edit_index(idx)
 
     def edit_selected(self) -> None:
         """

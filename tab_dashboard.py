@@ -12,7 +12,7 @@ import tkinter as tk  # Tkinter 기본 위젯 기능을 가져옵니다.
 from tkinter import ttk  # ttk 스타일 위젯을 가져옵니다.
 import re  # 정규 표현식을 사용하여 HTML 파싱을 수행합니다.
 
-from core import _http_get  # core.py에서 HTTP GET 요청 유틸리티를 가져옵니다.
+from core import _http_get, load_all, parse_date, Todo  # core.py에서 공통 유틸리티 및 Todo 관련 기능을 가져옵니다.
 
 
 # ─────────────────────────────────────────────
@@ -60,10 +60,12 @@ class HaksaNotice:
 @dataclass
 class AcadEvent:
     """학사일정 이벤트를 저장하는 데이터 클래스입니다."""
-    start: date   # 시작 날짜
-    end: date     # 종료 날짜
-    title: str    # 일정 내용
-    raw_range: str # 원본 날짜 범위 문자열
+    start: date   # 시작 날짜를 저장합니다.
+    end: date     # 종료 날짜를 저장합니다.
+    title: str    # 일정의 제목(내용)을 저장합니다.
+    raw_range: str # 원본 날짜 범위 문자열을 저장합니다.
+    is_todo: bool = False # 이 이벤트가 할일(Todo)인지 여부를 나타냅니다.
+    todo_status: int = 0  # 할일인 경우, 완료 상태를 저장합니다 (0: 미완료, 1: 진행중, 2: 완료).
 
 
 # ─────────────────────────────────────────────
@@ -783,7 +785,7 @@ class DashboardHaksaFrame(ttk.Frame):
 class DashboardAcadFrame(ttk.Frame):
     """캘린더 기반 학사일정을 보여주는 하위 탭 프레임입니다."""
 
-    def __init__(self, master: tk.Misc) -> None:
+    def __init__(self, master: tk.Misc, on_add_todo=None, on_edit_todo=None) -> None:
         super().__init__(master, style="Card.TFrame")
         
         # 현재 표시 중인 년/월
@@ -799,6 +801,14 @@ class DashboardAcadFrame(ttk.Frame):
         
         # 캘린더 그리드 (날짜 라벨들을 저장)
         self.day_labels: list[tk.Label] = []
+        
+        # 툴팁 관련
+        # 툴팁 윈도우 객체를 저장할 변수입니다. 초기값은 None입니다.
+        self.tooltip_window = None
+        
+        # 메인 앱에서 전달받은 콜백 함수들을 저장합니다.
+        self.on_add_todo = on_add_todo  # 할일 추가 시 호출할 콜백
+        self.on_edit_todo = on_edit_todo  # 할일 편집 시 호출할 콜백
         
         self._build_ui()
         self._load_month(self.current_year, self.current_month)
@@ -834,7 +844,7 @@ class DashboardAcadFrame(ttk.Frame):
         inner.pack(fill="both", expand=True)
         
         # 제목
-        ttk.Label(inner, text="📅 학사일정 캘린더", style="CardTitle.TLabel").pack(pady=(0, 15))
+        ttk.Label(inner, text="📅 일정 캘린더", style="CardTitle.TLabel").pack(pady=(0, 15))
         
         # 년도 네비게이션
         year_nav = ttk.Frame(inner, style="Card.TFrame")
@@ -904,22 +914,39 @@ class DashboardAcadFrame(ttk.Frame):
                 )
                 cell_frame.grid(row=row, column=col, sticky="nsew", padx=2, pady=2)
                 
+                # 색상 인디케이터 Frame (하단) - 먼저 패킹하여 공간을 우선 확보합니다.
+                indicator_frame = tk.Frame(cell_frame, bg="white", height=10)
+                # 하단에 배치하고 가로로 꽉 채웁니다. 아래쪽 여백을 4px 줍니다.
+                indicator_frame.pack(side="bottom", fill="x", pady=(0, 4))
+                
                 # 날짜 숫자 Label (상단)
                 date_label = tk.Label(
                     cell_frame, text="", font=("Segoe UI", 11),
-                    bg="white", fg="#424242", anchor="n", height=2
+                    bg="white", fg="#424242", anchor="n", height=1
                 )
+                # 상단에 배치하고 남은 공간을 채웁니다. 위쪽 여백 4px.
                 date_label.pack(side="top", fill="both", expand=True, pady=(4, 0))
                 
-                # 색상 인디케이터 Frame (하단)
-                indicator_frame = tk.Frame(cell_frame, bg="white", height=10)
-                indicator_frame.pack(side="bottom", fill="x", pady=(0, 4))
-                
-                # 클릭 이벤트 바인딩
+                # 클릭 이벤트 바인딩: 셀, 라벨, 인디케이터 어디를 눌러도 동작하도록 합니다.
                 cell_frame.bind("<Button-1>", self._on_date_click)
                 date_label.bind("<Button-1>", self._on_date_click)
                 indicator_frame.bind("<Button-1>", self._on_date_click)
                 
+                # 더블클릭 이벤트 바인딩: 마찬가지로 모든 위젯에 바인딩합니다.
+                cell_frame.bind("<Double-Button-1>", self._on_date_double_click)
+                date_label.bind("<Double-Button-1>", self._on_date_double_click)
+                indicator_frame.bind("<Double-Button-1>", self._on_date_double_click)
+                
+                # 툴팁 이벤트 바인딩 (마우스 호버): 마우스가 들어오고 나갈 때를 감지합니다.
+                cell_frame.bind("<Enter>", self._on_date_enter)
+                cell_frame.bind("<Leave>", self._on_date_leave)
+                # 자식 위젯들에도 바인딩하여 마우스가 내부 위젯으로 이동해도 툴팁이 유지되도록 합니다.
+                date_label.bind("<Enter>", self._on_date_enter)
+                date_label.bind("<Leave>", self._on_date_leave)
+                indicator_frame.bind("<Enter>", self._on_date_enter)
+                indicator_frame.bind("<Leave>", self._on_date_leave)
+                
+                # 생성된 위젯들을 리스트에 저장하여 나중에 접근할 수 있게 합니다.
                 self.day_cells.append(cell_frame)
                 self.day_labels.append(date_label)
                 self.day_indicators.append(indicator_frame)
@@ -970,7 +997,11 @@ class DashboardAcadFrame(ttk.Frame):
         self.tree.heading("range", text="기간")
         self.tree.heading("title", text="내용")
         self.tree.column("range", width=180, anchor="center")
+        self.tree.column("range", width=180, anchor="center")
         self.tree.column("title", width=400, anchor="w")
+        
+        # 리스트 더블클릭 이벤트: 편집
+        self.tree.bind("<Double-1>", self._on_list_double_click)
         
         # 상태바
         bottom = ttk.Frame(inner, style="Card.TFrame")
@@ -993,6 +1024,52 @@ class DashboardAcadFrame(ttk.Frame):
         
         # 데이터 가져오기
         self.events = fetch_academic_events_for_month(year, month)
+
+        # ─────────────────────────────────────────────
+        # [할일 결합] Todo 탭의 데이터도 함께 가져와서 병합합니다.
+        # ─────────────────────────────────────────────
+        try:
+            all_todos = load_all()
+            
+            # 현재 월의 시작일과 종료일 계산
+            import calendar
+            last_day_num = calendar.monthrange(year, month)[1]
+            month_start = date(year, month, 1)
+            month_end = date(year, month, last_day_num)
+            
+            for t in all_todos:
+                # 날짜 정보가 없으면 건너뜀
+                if not t.start or not t.end:
+                    continue
+                
+                try:
+                    # 문자열 -> date 객체 변환
+                    s_dt = parse_date(t.start).date()
+                    e_dt = parse_date(t.end).date()
+                    
+                    # 현재 표시 중인 월과 기간이 겹치는지 확인
+                    # (일정 시작 <= 월말) AND (일정 종료 >= 월초)
+                    if s_dt <= month_end and e_dt >= month_start:
+                        # AcadEvent 형식으로 변환하여 리스트에 추가
+                        # 구분하기 쉽게 제목 앞에 [할일] 태그를 붙입니다.
+                        # AcadEvent 형식으로 변환하여 리스트에 추가
+                        # 구분하기 쉽게 제목 앞에 [할일] 태그를 붙입니다.
+                        # AcadEvent 형식으로 변환하여 리스트에 추가합니다.
+                        # 구분하기 쉽게 제목 앞에 [할일] 태그를 붙입니다.
+                        self.events.append(AcadEvent(
+                            start=s_dt,  # 시작 날짜
+                            end=e_dt,    # 종료 날짜
+                            title=f"[할일] {t.title}",  # 제목에 태그 추가
+                            raw_range=f"{t.start} ~ {t.end}",  # 원본 범위 문자열
+                            is_todo=True,  # 할일임을 표시
+                            todo_status=t.status  # 현재 완료 상태 전달
+                        ))
+                except ValueError:
+                    # 날짜 형식이 올바르지 않은 경우 무시
+                    continue
+                    
+        except Exception as e:
+            print(f"Todo 데이터 병합 중 오류 발생: {e}")
         
         # 캘린더 그리드 업데이트
         self._update_calendar()
@@ -1085,7 +1162,7 @@ class DashboardAcadFrame(ttk.Frame):
                 date_label.config(text=str(day_num), bg=bg_color, fg=fg_color)
                 
                 # 인디케이터 업데이트
-                # 기존 인디케이터 제거
+                # 기존 위젯 제거
                 for widget in indicator_frame.winfo_children():
                     widget.destroy()
                 
@@ -1093,18 +1170,46 @@ class DashboardAcadFrame(ttk.Frame):
                 events_on_date = date_to_events.get(current_date, [])
                 
                 if events_on_date:
-                    # 일정이 있는 경우 - 색상 점 표시 (최대 3개)
+                    # 일정이 있는 경우 - Canvas를 사용하여 도형 그리기
                     indicator_frame.config(bg=bg_color)
                     
-                    for i, (color_idx, _) in enumerate(events_on_date[:3]):
-                        color = COLOR_PALETTE[color_idx]
-                        # 작은 색상 점 (Frame으로 표시)
-                        dot = tk.Frame(
-                            indicator_frame, bg=color,
-                            width=6, height=6, relief="flat"
-                        )
-                        dot.pack(side="left", padx=1)
-                        dot.pack_propagate(False)
+                    # 표시할 점의 개수를 최대 3개로 제한합니다.
+                    count = min(len(events_on_date), 3)
+                    
+                    # 캔버스 너비를 계산합니다: 점(6px) + 간격(2px) = 개당 8px
+                    # 레이아웃 깨짐 방지를 위해 딱 필요한 만큼만 너비를 설정합니다.
+                    total_width = count * 8
+                    
+                    # 캔버스를 생성합니다. 높이는 8px로 고정하여 셀 높이 영향을 최소화합니다.
+                    cv = tk.Canvas(
+                        indicator_frame, 
+                        width=total_width, 
+                        height=8, 
+                        bg=bg_color, 
+                        highlightthickness=0
+                    )
+                    # 캔버스를 중앙에 배치하고 상하 여백을 1px 줍니다.
+                    cv.pack(anchor="center", pady=1)
+                    
+                    # 캔버스에도 이벤트 바인딩을 추가하여 툴팁 등이 동작하게 합니다.
+                    cv.bind("<Double-Button-1>", self._on_date_double_click)
+                    cv.bind("<Button-1>", self._on_date_click)
+                    cv.bind("<Enter>", self._on_date_enter)
+                    cv.bind("<Leave>", self._on_date_leave)
+                    # 캔버스 객체에 날짜 정보를 저장해둡니다.
+                    cv.day_info = current_date
+                    
+                    # 최대 3개의 일정에 대해 점을 그립니다.
+                    for i, (color_idx, ev) in enumerate(events_on_date[:3]):
+                        color = COLOR_PALETTE[color_idx]  # 팔레트에서 색상 가져오기
+                        x = i * 8 # x 좌표 시작 위치 계산 (0, 8, 16...)
+                        
+                        if ev.is_todo:
+                            # 할일인 경우: 원형으로 그립니다. (1,1 ~ 7,7) -> 6x6 크기
+                            cv.create_oval(x+1, 1, x+7, 7, fill=color, outline="")
+                        else:
+                            # 학사일정인 경우: 사각형으로 그립니다.
+                            cv.create_rectangle(x+1, 1, x+7, 7, fill=color, outline="")
                 else:
                     # 일정 없음
                     indicator_frame.config(bg=bg_color)
@@ -1178,28 +1283,147 @@ class DashboardAcadFrame(ttk.Frame):
         
         clicked_date = cell_frame.day_info
         
-        # 선택 토글
+        # 선택 토글 로직: 이미 선택된 날짜를 다시 클릭했는지 확인합니다.
         if self.selected_date == clicked_date:
-            # 선택 해제
+            # 이미 선택된 날짜라면 선택을 해제합니다.
             self.selected_date = None
+            # 캘린더 UI를 갱신하여 선택 표시를 제거합니다.
             self._update_calendar()
+            # 일정 리스트를 전체 목록으로 갱신합니다.
             self._update_event_list()
         else:
-            # 새로 선택
+            # 다른 날짜를 클릭했다면 새로 선택합니다.
             self.selected_date = clicked_date
             
-            # 비주얼 피드백
+            # 캘린더 UI를 갱신하여 이전 선택을 지우고 새 선택을 표시합니다.
             self._update_calendar()
             
-            # 선택된 날짜 강조
+            # 선택된 날짜를 시각적으로 강조합니다 (배경색 변경).
             for idx, frame in enumerate(self.day_cells):
+                # 해당 날짜의 셀을 찾습니다.
                 if hasattr(frame, 'day_info') and frame.day_info == clicked_date:
-                    frame.config(bg="#3F51B5")
+                    frame.config(bg="#3F51B5")  # 배경색을 강조색으로 변경
+                    # 날짜 라벨 스타일 변경 (흰색 글씨, 굵게)
                     self.day_labels[idx].config(bg="#3F51B5", fg="white", font=("Segoe UI", 10, "bold"))
+                    # 인디케이터 배경색도 맞춤
                     self.day_indicators[idx].config(bg="#3F51B5")
             
-            # 리스트 필터링
+            # 우측 리스트를 해당 날짜의 일정으로 필터링합니다.
             self._update_event_list(clicked_date)
+
+    def _on_date_double_click(self, event) -> None:
+        """캘린더 날짜 더블클릭 이벤트 핸들러."""
+        widget = event.widget
+        
+        # 클릭된 위젯이 cell_frame인지, 그 자식인지 확인
+        if widget in self.day_cells:
+            cell_frame = widget
+        elif widget.master in self.day_cells:
+            cell_frame = widget.master
+        else:
+            return
+        
+        if not hasattr(cell_frame, 'day_info') or cell_frame.day_info is None:
+            return
+        
+        clicked_date = cell_frame.day_info
+        
+        # 더블클릭 시에는 항상 해당 날짜가 선택된 상태여야 합니다.
+        # 싱글 클릭으로 인해 선택이 해제되었을 수 있으므로 확인 후 강제로 선택합니다.
+        if self.selected_date != clicked_date:
+            self.selected_date = clicked_date
+            self._update_calendar()  # 캘린더 UI 갱신
+            self._update_event_list(clicked_date)  # 리스트 갱신
+            
+        # UI 갱신을 즉시 반영합니다. (매우 중요)
+        # 다이얼로그가 뜨기 전에 선택 상태 렌더링을 보장하기 위함입니다.
+        # 싱글 클릭 이벤트로 인한 UI 변경사항이 아직 반영되지 않았을 수 있으므로 여기서 강제 갱신합니다.
+        self.update_idletasks()
+        
+        # 날짜 더블클릭 -> 항상 새 할일 추가 다이얼로그를 엽니다.
+        if self.on_add_todo:
+            self.on_add_todo(clicked_date.strftime("%Y-%m-%d"))
+
+    def _on_date_enter(self, event) -> None:
+        """마우스가 날짜 셀에 들어왔을 때 툴팁을 표시합니다."""
+        widget = event.widget
+        
+        # day_info 속성을 찾습니다. (위젯 자체 또는 부모 위젯에서)
+        day_info = getattr(widget, 'day_info', None)
+        if not day_info and hasattr(widget, 'master'):
+            day_info = getattr(widget.master, 'day_info', None)
+            
+        if not day_info:
+            return  # 날짜 정보가 없으면 무시합니다.
+            
+        # 해당 날짜에 포함된 Todo 항목들을 필터링합니다.
+        todos = [
+            ev for ev in self.events
+            if ev.is_todo and ev.start <= day_info <= ev.end
+        ]
+        
+        if not todos:
+            return  # 할일이 없으면 툴팁을 표시하지 않습니다.
+            
+        total = len(todos)  # 총 할일 개수
+        completed = len([t for t in todos if t.todo_status == 2]) # 완료된 할일 개수 (상태값 2)
+        
+        # 툴팁 텍스트를 생성합니다.
+        text = f"할일: {total}개 중 {completed}개 완료"
+        self._show_tooltip(event, text)
+
+    def _on_date_leave(self, event) -> None:
+        """마우스가 날짜 셀에서 나갔을 때 툴팁을 숨깁니다."""
+        self._hide_tooltip()
+
+    def _show_tooltip(self, event, text: str) -> None:
+        """툴팁 윈도우를 생성하여 표시합니다."""
+        if self.tooltip_window:
+            self.tooltip_window.destroy()  # 이미 떠있는 툴팁이 있다면 제거합니다.
+            
+        # 마우스 커서 위치를 기준으로 툴팁 위치를 계산합니다.
+        x = event.x_root + 15
+        y = event.y_root + 10
+        
+        # 툴팁용 최상위 윈도우(Toplevel)를 생성합니다.
+        self.tooltip_window = tw = tk.Toplevel(self)
+        tw.wm_overrideredirect(True) # 윈도우 장식(타이틀바 등)을 제거합니다.
+        tw.wm_geometry(f"+{x}+{y}")  # 위치를 설정합니다.
+        
+        # 툴팁 내용을 표시할 라벨을 생성합니다.
+        label = tk.Label(
+            tw, text=text, justify='left',
+            background="#ffffe0", relief='solid', borderwidth=1,
+            font=("Segoe UI", 9)
+        )
+        label.pack(ipadx=5, ipady=2)  # 내부 여백을 줍니다.
+        
+    def _hide_tooltip(self) -> None:
+        """표시된 툴팁 윈도우를 제거합니다."""
+        if self.tooltip_window:
+            self.tooltip_window.destroy()
+            self.tooltip_window = None
+
+    def _on_list_double_click(self, event) -> None:
+        """우측 일정 리스트 더블클릭 이벤트 핸들러."""
+        selection = self.tree.selection()
+        if not selection:
+            return
+        
+        # 선택된 항목의 값 가져오기
+        item_id = selection[0]
+        values = self.tree.item(item_id, "values")
+        if not values:
+            return
+            
+        # values = (range, title)
+        title = values[1]
+        
+        # "[할일] " 로 시작하는 경우에만 편집
+        if title.startswith("[할일] "):
+            real_title = title.replace("[할일] ", "", 1)
+            if self.on_edit_todo:
+                self.on_edit_todo(real_title)
 
     def _prev_year(self) -> None:
         """이전 년도로 이동."""
@@ -1370,70 +1594,6 @@ class NoticeDetailDialog(tk.Toplevel):
         )
         title_label.pack(fill="x", pady=(0, 15))
         
-        # 메타 정보 카드
-        meta_frame = ttk.Frame(main_frame, style="Card.TFrame", padding=15)
-        meta_frame.pack(fill="x", pady=(0, 20))
-        
-        # 강조색 띠
-        ttk.Frame(meta_frame, style="Accent.TFrame", height=3).pack(fill="x", side="top")
-        
-        # 메타 정보 내용
-        meta_inner = ttk.Frame(meta_frame, style="Card.TFrame")
-        meta_inner.pack(fill="x", padx=10, pady=10)
-        
-        info_lines = [
-            f"작성자: {self.detail.get('writer', '-')}",
-            f"작성일: {self.detail.get('date', '-')}",
-            f"조회수: {self.detail.get('views', '0')}"
-        ]
-        
-        for line in info_lines:
-            ttk.Label(
-                meta_inner,
-                text=line,
-                style="CardInfo.TLabel",
-                font=("Segoe UI", 10)
-            ).pack(anchor="w", pady=2)
-        
-        # 첨부파일 정보 (있는 경우)
-        attachments = self.detail.get('attachments', [])
-        if attachments:
-            attach_label = ttk.Label(
-                main_frame, 
-                text=f"📎 첨부파일: {len(attachments)}개",
-                style="CardBody.TLabel",
-                font=("Segoe UI", 11, "bold")
-            )
-            attach_label.pack(fill="x", pady=(10, 5))
-        
-        # 안내 메시지
-        info_frame = ttk.Frame(main_frame, style="Card.TFrame", padding=20)
-        info_frame.pack(fill="both", expand=True, pady=(20, 10))
-        
-        ttk.Label(
-            info_frame,
-            text="📄 전체 내용 보기",
-            style="CardBody.TLabel",
-            font=("Segoe UI", 12, "bold"),
-            foreground="#3F51B5"
-        ).pack(pady=(0, 10))
-        
-        ttk.Label(
-            info_frame,
-            text="본문 내용, 이미지, 첨부파일을 제대로 보시려면\n브라우저에서 확인하세요.",
-           style="CardInfo.TLabel",
-            font=("Segoe UI", 10),
-            justify="center"
-        ).pack(pady=(0, 15))
-        
-        # 브라우저에서 열기 버튼
-        btn_open = ttk.Button(
-            info_frame,
-            text="🌐 브라우저에서 열기",
-            style="Action.TButton",
-            command=lambda: self._open_url(self.url)
-        )
-        btn_open.pack(pady=5)
         
         # 닫기 버튼
         btn_close = ttk.Button(
@@ -1461,8 +1621,10 @@ class DashboardTab(ttk.Frame):
     내부에 Notebook을 하나 더 두어 3개의 하위 탭(학사공지, 학사일정, 취업정보)을 관리합니다.
     """
 
-    def __init__(self, master: tk.Misc) -> None:
+    def __init__(self, master: tk.Misc, on_add_todo=None, on_edit_todo=None) -> None:
         super().__init__(master)
+        self.on_add_todo = on_add_todo
+        self.on_edit_todo = on_edit_todo
         configure_dashboard_style()  # 대시보드 전용 스타일 초기화
         self._build_ui()  # UI 구성
 
@@ -1478,10 +1640,11 @@ class DashboardTab(ttk.Frame):
 
         # 각 하위 탭 프레임 생성
         frm_haksa = DashboardHaksaFrame(nb)
-        frm_acad = DashboardAcadFrame(nb)
+        frm_acad = DashboardAcadFrame(nb, on_add_todo=self.on_add_todo, on_edit_todo=self.on_edit_todo)
         frm_jobs = DashboardJobsFrame(nb)
 
         # Notebook에 탭 추가
         nb.add(frm_haksa, text="  학사공지  ")
         nb.add(frm_jobs, text="  취업정보  ")
-        nb.add(frm_acad, text="  학사일정  ")
+        nb.add(frm_acad, text="  일정  ")
+

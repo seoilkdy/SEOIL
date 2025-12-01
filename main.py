@@ -179,7 +179,12 @@ class MainApp(tk.Tk):
         )
 
         # 대시보드 탭: 내부에 또 하나의 Notebook 을 가지는 프레임
-        self.tab_dashboard = DashboardTab(nb)
+        # 캘린더 더블클릭 시 할일 추가/편집을 위한 콜백 전달
+        self.tab_dashboard = DashboardTab(
+            nb,
+            on_add_todo=self._add_todo_from_calendar,
+            on_edit_todo=self._edit_todo_by_title,
+        )
 
         # Notebook 에 실제 탭으로 추가
         nb.add(self.tab_dashboard, text="대시보드")
@@ -208,6 +213,25 @@ class MainApp(tk.Tk):
         - ToDo 추천 AI 문구 재요청
         """
         self.tab_report.refresh_now()  # 통계/시각화 즉시 갱신
+        
+        # 대시보드 탭의 캘린더도 갱신 (할일 표시 업데이트)
+        # DashboardTab -> DashboardAcadFrame 접근이 필요함
+        # DashboardTab 구조: Notebook -> [Haksa, Jobs, Acad]
+        try:
+            # DashboardTab 내부의 Notebook 접근
+            dashboard_nb = self.tab_dashboard.winfo_children()[0]
+            if isinstance(dashboard_nb, ttk.Notebook):
+                # 탭 ID로 위젯 찾기 (순서에 의존: 학사공지, 취업정보, 학사일정 순)
+                # 하지만 탭 순서가 바뀔 수 있으므로 탭 텍스트로 찾거나, 
+                # DashboardTab에 헬퍼 메서드를 두는 게 좋음.
+                # 여기서는 간단히 모든 하위 프레임 중 DashboardAcadFrame을 찾아서 갱신
+                for child in dashboard_nb.winfo_children():
+                    if "DashboardAcadFrame" in str(type(child)):
+                        # _load_month 호출하여 갱신 (현재 년/월 유지)
+                        child._load_month(child.current_year, child.current_month)
+        except Exception:
+            pass
+
         # 약간의 딜레이 후 AI 추천 요청(여러 변경을 한 번에 묶는 효과)
         self.after(250, self._ai_refresh_todo_tip)
 
@@ -223,6 +247,17 @@ class MainApp(tk.Tk):
         if idx is None:
             return  # 해당 제목의 Todo 를 찾지 못하면 아무것도 하지 않음
         self.tab_todo.select_and_edit_index(idx)  # 할 일 탭에 편집을 위임
+
+    def _add_todo_from_calendar(self, date_str: str) -> None:
+        """
+        캘린더에서 빈 날짜를 더블클릭했을 때 호출됩니다.
+        해당 날짜로 새 할 일을 추가하는 다이얼로그를 엽니다.
+        """
+        # 할 일 탭으로 전환 (선택 사항, 여기서는 팝업만 띄우고 탭 전환은 안 함)
+        # self.tab_todo.add_todo_with_date(date_str)
+        
+        # 할 일 탭의 메서드 호출
+        self.tab_todo.add_todo_with_date(date_str)
 
     # -----------------------------
     # 우하단 '✨ 도우미' 도크/팝업
@@ -388,6 +423,10 @@ class MainApp(tk.Tk):
             except Exception as e:
                 return False, f"응답 파싱 실패: {e}"
         else:
+            # 401 Unauthorized: API 키가 잘못된 경우
+            if code == 401:
+                return False, "키 검증 필요"
+            
             try:
                 err = json.loads(text).get("error", {}).get("message", text)
             except Exception:

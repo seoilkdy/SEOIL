@@ -1050,12 +1050,7 @@ class DashboardAcadFrame(ttk.Frame):
                     # 현재 표시 중인 월과 기간이 겹치는지 확인
                     # (일정 시작 <= 월말) AND (일정 종료 >= 월초)
                     if s_dt <= month_end and e_dt >= month_start:
-                        # AcadEvent 형식으로 변환하여 리스트에 추가
-                        # 구분하기 쉽게 제목 앞에 [할일] 태그를 붙입니다.
-                        # AcadEvent 형식으로 변환하여 리스트에 추가
-                        # 구분하기 쉽게 제목 앞에 [할일] 태그를 붙입니다.
-                        # AcadEvent 형식으로 변환하여 리스트에 추가합니다.
-                        # 구분하기 쉽게 제목 앞에 [할일] 태그를 붙입니다.
+                    # 구분하기 쉽게 제목 앞에 [할일] 태그를 붙입니다.
                         self.events.append(AcadEvent(
                             start=s_dt,  # 시작 날짜
                             end=e_dt,    # 종료 날짜

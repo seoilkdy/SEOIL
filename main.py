@@ -6,7 +6,7 @@ from __future__ import annotations  # 타입을 문자열로 참조 허용
 
 import json  # AI 컨텍스트를 JSON 문자열로 만들 때 사용
 import threading  # OpenAI API 호출을 백그라운드 스레드에서 실행
-from datetime import date  # 오늘 날짜 계산에 사용
+from datetime import date, datetime, timedelta  # 날짜/시간 계산에 사용
 import os  # 환경변수에서 OPENAI_API_KEY 읽기
 import tkinter as tk  # Tkinter 기본 위젯
 from tkinter import ttk, messagebox  # ttk 스타일 + 메시지 박스
@@ -23,6 +23,13 @@ from core import (  # 공통 모듈에서 기능 import
     save_all,            # Todo 전체 저장(폴백/일괄 저장 시 사용 가능)
     _http_post,          # OpenAI API 호출용 HTTP POST
     Todo,                # Todo 데이터 모델
+    # 알림 관련 함수들
+    load_notification_settings,
+    save_notification_settings,
+    send_ntfy_notification,
+    get_notification_key,
+    mark_notification_sent,
+    is_notification_sent,
 )
 from tab_todo import TodoTab  # 할 일 탭 프레임
 from tab_timer import TimerTab  # 타이머 탭 프레임
@@ -203,6 +210,9 @@ class MainApp(tk.Tk):
         # 앱 시작 직후 ToDo 컨텍스트 기반 AI 추천 자동 요청
         self.after(700, self._ai_refresh_todo_tip)
 
+        # 앱 시작 시 스마트폰 알림 예약 (마감 임박 할일)
+        self.after(1000, self._schedule_deadline_notifications)
+
     # -----------------------------
     # Todo 변경 → 리포트/AI 갱신
     # -----------------------------
@@ -263,16 +273,24 @@ class MainApp(tk.Tk):
     # 우하단 '✨ 도우미' 도크/팝업
     # -----------------------------
     def _build_assistant_dock(self) -> None:
-        """우하단에 '✨ 도우미' 버튼을 띄우고 Ctrl+K 단축키로 토글한다."""
+        """우하단에 '✨ 도우미'와 '🔔 알림' 버튼을 띄우고 Ctrl+K 단축키로 토글한다."""
         dock = ttk.Frame(self)  # 도크용 프레임
         dock.place(relx=1.0, rely=1.0, x=-12, y=-12, anchor="se")  # 우하단 모서리에 부착
+
+        # 알림 설정 버튼
+        self.btn_notify = ttk.Button(
+            dock,
+            text="🔔 알림",
+            command=self._toggle_notification_popup,
+        )
+        self.btn_notify.pack(side="left", padx=(0, 4))
 
         self.btn_assist = ttk.Button(
             dock,
             text="✨ 도우미",
             command=self._toggle_assistant_popup,
         )
-        self.btn_assist.pack()
+        self.btn_assist.pack(side="left")
 
         self.update_idletasks()  # 실제 위젯 크기 계산
         # 버튼 크기를 가지고 ToDo 하단 'AI 추천 새로고침' 버튼과 겹치지 않게 패딩 조정
@@ -639,6 +657,196 @@ class MainApp(tk.Tk):
             ]
 
         return "키 미설정/오프라인 폴백 제안:\n" + "\n".join(lines)
+
+    # -----------------------------
+    # 스마트폰 알림 스케줄링 및 설정
+    # -----------------------------
+    def _schedule_deadline_notifications(self) -> None:
+        """
+        앱 시작 시 호출되어 마감 임박 할일에 대한 알림을 ntfy.sh에 예약한다.
+        - D-3, D-1, D-day 알림을 예약
+        - 이미 보낸 알림은 스킵 (중복 방지)
+        - ntfy 무료 서버는 최대 72시간 후까지만 예약 가능
+        """
+        settings = load_notification_settings()
+        
+        # 알림이 비활성화되어 있거나 토픽이 없으면 스킵
+        if not settings["notifications_enabled"] or not settings["ntfy_topic"]:
+            return
+        
+        topic = settings["ntfy_topic"]
+        notify_hour = settings.get("notification_hour", 9)
+        today = date.today()
+        now = datetime.now()
+        max_future = now + timedelta(hours=72)  # ntfy 최대 예약 가능 시간
+        
+        scheduled_count = 0
+        
+        for todo in self.todos:
+            # 완료된 할일은 스킵
+            if todo.status == 2:
+                continue
+            
+            try:
+                end_date = parse_date(todo.end).date()
+            except Exception:
+                continue
+            
+            days_left = (end_date - today).days
+            
+            # 이미 지난 마감은 스킵
+            if days_left < 0:
+                continue
+            
+            # 알림 스케줄 정의: (D-day 기준, 알림 타입, 제목, 우선순위)
+            schedules = [
+                (3, "D-3", "⏰ 마감 3일 전", "default"),
+                (1, "D-1", "⚠️ 마감 1일 전!", "high"),
+                (0, "D-day", "🚨 오늘 마감!", "urgent"),
+            ]
+            
+            for d_minus, notify_type, title, priority in schedules:
+                if days_left != d_minus:
+                    continue
+                
+                # 알림 예약 시간 계산
+                notify_date = end_date - timedelta(days=d_minus)
+                notify_datetime = datetime.combine(notify_date, datetime.min.time().replace(hour=notify_hour))
+                
+                # 이미 지난 시간이면 스킵
+                if notify_datetime <= now:
+                    continue
+                
+                # 72시간 이후면 스킵 (다음 앱 실행 시 처리)
+                if notify_datetime > max_future:
+                    continue
+                
+                # 중복 체크
+                notification_key = get_notification_key(todo.title, notify_date, notify_type)
+                if is_notification_sent(notification_key):
+                    continue
+                
+                # 알림 메시지 구성
+                message = f'"{todo.title}" 마감까지 {d_minus}일 남았습니다!' if d_minus > 0 else f'"{todo.title}" 오늘까지 완료하세요!'
+                
+                # 알림 예약
+                ok, result = send_ntfy_notification(
+                    topic=topic,
+                    title=title,
+                    message=message,
+                    scheduled_at=notify_datetime,
+                    priority=priority
+                )
+                
+                if ok:
+                    mark_notification_sent(notification_key)
+                    scheduled_count += 1
+                    print(f"[알림 예약] {todo.title} - {notify_type} @ {notify_datetime}")
+        
+        if scheduled_count > 0:
+            print(f"[알림] 총 {scheduled_count}개 알림이 스마트폰으로 예약되었습니다.")
+
+    def _toggle_notification_popup(self) -> None:
+        """알림 설정 팝업을 토글(없으면 생성, 있으면 닫기)한다."""
+        if hasattr(self, "_notification_popup") and self._notification_popup and self._notification_popup.winfo_exists():
+            self._notification_popup.destroy()
+            self._notification_popup = None
+            return
+
+        pop = tk.Toplevel(self)
+        pop.title("🔔 스마트폰 알림 설정")
+        pop.resizable(False, False)
+        pop.transient(self)
+        self._notification_popup = pop
+
+        frm = ttk.Frame(pop)
+        frm.pack(fill="both", expand=True, padx=15, pady=15)
+
+        # 설정 불러오기
+        settings = load_notification_settings()
+
+        # ntfy 토픽 입력
+        ttk.Label(frm, text="ntfy 토픽 이름:").pack(anchor="w")
+        ttk.Label(frm, text="(스마트폰 ntfy 앱에서 이 이름으로 구독하세요)", font=("Segoe UI", 8)).pack(anchor="w")
+        self._entry_topic = ttk.Entry(frm, width=35)
+        self._entry_topic.insert(0, settings.get("ntfy_topic", ""))
+        self._entry_topic.pack(fill="x", pady=(2, 8))
+
+        # 알림 활성화 체크박스
+        self._var_enabled = tk.BooleanVar(value=settings.get("notifications_enabled", True))
+        ttk.Checkbutton(frm, text="알림 활성화", variable=self._var_enabled).pack(anchor="w", pady=(0, 8))
+
+        # 알림 시간 설정
+        hour_frame = ttk.Frame(frm)
+        hour_frame.pack(fill="x", pady=(0, 8))
+        ttk.Label(hour_frame, text="알림 시간:").pack(side="left")
+        self._spinbox_hour = ttk.Spinbox(hour_frame, from_=0, to=23, width=5)
+        self._spinbox_hour.set(settings.get("notification_hour", 9))
+        self._spinbox_hour.pack(side="left", padx=4)
+        ttk.Label(hour_frame, text="시").pack(side="left")
+        
+        # 알림 일정 설명
+        ttk.Label(frm, 
+                  text="* 마감 3일 전 / 1일 전 / 당일 오전 9시에 알림이 전송됩니다.", 
+                  font=("Segoe UI", 9), foreground="#666666").pack(anchor="w", pady=(2, 0))
+
+        # 버튼 영역
+        btn_frame = ttk.Frame(frm)
+        btn_frame.pack(fill="x", pady=(10, 0))
+
+        ttk.Button(btn_frame, text="💾 저장", command=self._save_notification_settings).pack(side="left")
+        ttk.Button(btn_frame, text="📱 테스트 알림", command=self._send_test_notification).pack(side="left", padx=8)
+        ttk.Button(btn_frame, text="닫기", command=pop.destroy).pack(side="right")
+
+        # 상태 라벨
+        self._lbl_notify_status = ttk.Label(frm, text="", foreground="gray")
+        self._lbl_notify_status.pack(anchor="w", pady=(10, 0))
+
+        center_over(self, pop)
+
+    def _save_notification_settings(self) -> None:
+        """알림 설정을 저장한다."""
+        topic = self._entry_topic.get().strip()
+        enabled = self._var_enabled.get()
+        try:
+            hour = int(self._spinbox_hour.get())
+            hour = max(0, min(23, hour))
+        except ValueError:
+            hour = 9
+
+        settings = load_notification_settings()
+        settings["ntfy_topic"] = topic
+        settings["notifications_enabled"] = enabled
+        settings["notification_hour"] = hour
+        save_notification_settings(settings)
+
+        self._lbl_notify_status.config(text="✅ 설정이 저장되었습니다.", foreground="green")
+        
+        # 설정 저장 후 알림 재스케줄링
+        if topic and enabled:
+            self.after(500, self._schedule_deadline_notifications)
+
+    def _send_test_notification(self) -> None:
+        """테스트 알림을 즉시 전송한다."""
+        topic = self._entry_topic.get().strip()
+        if not topic:
+            self._lbl_notify_status.config(text="❌ 토픽 이름을 입력하세요.", foreground="red")
+            return
+
+        self._lbl_notify_status.config(text="📤 전송 중...", foreground="gray")
+        self.update_idletasks()
+
+        ok, result = send_ntfy_notification(
+            topic=topic,
+            title="🎉 테스트 알림",
+            message="갓생살기 앱에서 보낸 테스트 알림입니다!",
+            priority="default"
+        )
+
+        if ok:
+            self._lbl_notify_status.config(text="✅ 테스트 알림 전송 성공! 스마트폰을 확인하세요.", foreground="green")
+        else:
+            self._lbl_notify_status.config(text=f"❌ 전송 실패: {result}", foreground="red")
 
     # -----------------------------
     # 종료 처리

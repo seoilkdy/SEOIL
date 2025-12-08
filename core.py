@@ -159,6 +159,155 @@ def _http_post(url: str, headers: dict[str, str] | None = None,
 
 
 # ─────────────────────────────────────────────
+# 3-1. 스마트폰 푸시 알림 (ntfy.sh) 관련 함수
+# ─────────────────────────────────────────────
+
+# 설정 파일 경로 (todo.db와 같은 폴더에 저장)
+try:
+    SETTINGS_PATH = str(Path(__file__).with_name("settings.json"))
+except NameError:
+    SETTINGS_PATH = "settings.json"
+
+# 기본 알림 시간 (오전 9시)
+DEFAULT_NOTIFICATION_HOUR = 9
+
+
+def load_notification_settings() -> dict:
+    """
+    알림 설정을 파일에서 불러옵니다.
+    파일이 없거나 오류 시 기본값을 반환합니다.
+    """
+    default = {
+        "ntfy_topic": "",           # ntfy 토픽 이름 (비어있으면 비활성화)
+        "notifications_enabled": True,  # 알림 활성화 여부
+        "notification_hour": DEFAULT_NOTIFICATION_HOUR,  # 알림 시간 (시)
+        "sent_notifications": [],   # 이미 전송된 알림 기록 (중복 방지)
+    }
+    try:
+        with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+            # 기본값과 병합 (새로운 설정 항목이 추가되어도 호환되도록)
+            for key in default:
+                if key not in loaded:
+                    loaded[key] = default[key]
+            return loaded
+    except Exception:
+        return default
+
+
+def save_notification_settings(settings: dict) -> None:
+    """
+    알림 설정을 파일에 저장합니다.
+    """
+    try:
+        with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+            json.dump(settings, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[알림 설정 저장 오류] {e}")
+
+
+def send_ntfy_notification(
+    topic: str,
+    title: str,
+    message: str,
+    scheduled_at: datetime | None = None,
+    priority: str = "default"
+) -> tuple[bool, str]:
+    """
+    ntfy.sh를 통해 스마트폰에 푸시 알림을 보냅니다.
+    
+    Args:
+        topic: ntfy 토픽 이름 (스마트폰 앱에서 구독한 이름)
+        title: 알림 제목
+        message: 알림 내용
+        scheduled_at: 예약 시간 (None이면 즉시 전송)
+        priority: 알림 우선순위 ("min", "low", "default", "high", "urgent")
+    
+    Returns:
+        (성공 여부, 메시지) 튜플
+    """
+    if not topic:
+        return False, "토픽이 설정되지 않았습니다."
+    
+    url = f"https://ntfy.sh/{topic}"
+    
+    headers = {
+        "Title": title,
+        "Priority": priority,
+        "Tags": "bell",  # 알림 아이콘에 벨 이모지 추가
+    }
+    
+    # 예약 알림인 경우 At 헤더 추가
+    if scheduled_at:
+        # ntfy는 최대 3일(72시간) 후까지만 예약 가능
+        max_scheduled = datetime.now() + timedelta(hours=72)
+        if scheduled_at > max_scheduled:
+            return False, "예약은 최대 72시간(3일) 후까지만 가능합니다."
+        
+        timestamp = int(scheduled_at.timestamp())
+        headers["At"] = str(timestamp)
+    
+    # ntfy는 body를 raw text로 전송
+    body = message.encode("utf-8")
+    
+    req = urlrequest.Request(url, data=body, method="POST")
+    for key, value in headers.items():
+        # urllib/http.client는 헤더를 latin-1로 인코딩하므로,
+        # UTF-8 문자열을 바이트로 변환 후 latin-1로 디코딩하여 우회합니다.
+        safe_value = str(value).encode("utf-8").decode("latin-1")
+        req.add_header(key, safe_value)
+    
+    try:
+        with urlrequest.urlopen(req, timeout=15) as resp:
+            code = getattr(resp, "status", resp.getcode())
+            if code == 200:
+                if scheduled_at:
+                    return True, f"예약됨: {scheduled_at.strftime('%Y-%m-%d %H:%M')}"
+                return True, "알림 전송 성공"
+            return False, f"응답 코드: {code}"
+    except urlerror.HTTPError as e:
+        return False, f"HTTP 오류 {e.code}: {e.read().decode('utf-8', 'ignore')}"
+    except Exception as e:
+        return False, f"전송 오류: {e}"
+
+
+def get_notification_key(todo_title: str, notify_date: date, notify_type: str) -> str:
+    """
+    중복 알림 방지를 위한 고유 키를 생성합니다.
+    
+    Args:
+        todo_title: 할일 제목
+        notify_date: 알림 날짜
+        notify_type: 알림 종류 ("D-3", "D-1", "D-day")
+    
+    Returns:
+        고유 키 문자열 (예: "과제_2025-12-12_D-1")
+    """
+    return f"{todo_title}_{notify_date.strftime(DATE_FMT)}_{notify_type}"
+
+
+def mark_notification_sent(notification_key: str) -> None:
+    """
+    알림을 전송 완료로 표시합니다 (중복 방지용).
+    """
+    settings = load_notification_settings()
+    if notification_key not in settings["sent_notifications"]:
+        settings["sent_notifications"].append(notification_key)
+        # 오래된 알림 기록 정리 (최근 100개만 유지)
+        if len(settings["sent_notifications"]) > 100:
+            settings["sent_notifications"] = settings["sent_notifications"][-100:]
+        save_notification_settings(settings)
+
+
+def is_notification_sent(notification_key: str) -> bool:
+    """
+    이미 전송된 알림인지 확인합니다.
+    """
+    settings = load_notification_settings()
+    return notification_key in settings["sent_notifications"]
+
+
+# ─────────────────────────────────────────────
 # 4. SQLite 데이터베이스 관리 (Todo 저장소)
 # ─────────────────────────────────────────────
 
